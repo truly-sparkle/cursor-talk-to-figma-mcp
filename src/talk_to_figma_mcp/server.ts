@@ -996,6 +996,103 @@ server.tool(
   }
 );
 
+// ---- Design System: Variables (write) -----------------------------
+
+function variableTool(
+  name: string,
+  description: string,
+  paramSchema: Record<string, any>,
+  successText: (typed: any) => string,
+) {
+  server.tool(name, description, paramSchema, async (args: any) => {
+    try {
+      const result = await sendCommandToFigma(name as any, args);
+      return {
+        content: [
+          { type: "text", text: successText(result) },
+          { type: "text", text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error in ${name}: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  });
+}
+
+variableTool(
+  "create_variable_collection",
+  "Create a new Figma Variable collection. Returns the collection with its auto-generated default modeId — capture this to set values later.",
+  {
+    name: z.string().min(1).describe("Collection name, e.g. 'colors' or 'spacing'"),
+  },
+  (r: any) => `Created collection "${r.name}" (id: ${r.id}, defaultModeId: ${r.defaultModeId})`,
+);
+
+variableTool(
+  "create_variable",
+  "Create a Variable inside a collection. Optionally seed an initial value for the collection's default mode.\n" +
+  "- COLOR value: { r, g, b, a? } with 0-1 channels\n" +
+  "- FLOAT: number\n" +
+  "- BOOLEAN: true/false\n" +
+  "- STRING: string",
+  {
+    collectionId: z.string().describe("Target collection id"),
+    name: z.string().min(1).describe("Variable name, e.g. 'color/brand/500' (slashes create groups)"),
+    type: z.enum(["BOOLEAN", "FLOAT", "STRING", "COLOR"]).describe("Variable type"),
+    value: z.any().optional().describe("Optional initial value for the default mode"),
+  },
+  (r: any) => `Created variable "${r.name}" (${r.resolvedType}, id: ${r.id})`,
+);
+
+variableTool(
+  "set_variable_value",
+  "Set a Variable's value for a specific mode. Value is validated against the variable's resolvedType.",
+  {
+    variableId: z.string().describe("Variable id"),
+    modeId: z.string().describe("Mode id (from the parent collection's modes)"),
+    value: z.any().describe("Value matching the variable's type"),
+  },
+  (r: any) => `Set value of "${r.name}" for mode`,
+);
+
+variableTool(
+  "add_variable_mode",
+  "Add a new mode to a variable collection (e.g. 'dark', 'compact'). Returns the new modeId — use it with set_variable_value.",
+  {
+    collectionId: z.string().describe("Collection id"),
+    name: z.string().min(1).describe("Mode name, e.g. 'dark'"),
+  },
+  (r: any) => `Added mode "${r.name}" (modeId: ${r.modeId})`,
+);
+
+variableTool(
+  "rename_variable_mode",
+  "Rename a mode within a collection.",
+  {
+    collectionId: z.string().describe("Collection id"),
+    modeId: z.string().describe("Mode id to rename"),
+    name: z.string().min(1).describe("New mode name"),
+  },
+  (r: any) => `Renamed mode ${r.modeId} to "${r.name}"`,
+);
+
+variableTool(
+  "remove_variable_mode",
+  "Remove a mode from a collection. The collection must have at least one remaining mode.",
+  {
+    collectionId: z.string().describe("Collection id"),
+    modeId: z.string().describe("Mode id to remove"),
+  },
+  (_r: any) => `Removed mode`,
+);
+
 // -------------------------------------------------------------------
 
 // Set Stroke Color Tool
@@ -2995,6 +3092,12 @@ type FigmaCommand =
   | "set_blend_mode"
   | "get_variable_collections"
   | "get_variables"
+  | "create_variable_collection"
+  | "create_variable"
+  | "set_variable_value"
+  | "add_variable_mode"
+  | "rename_variable_mode"
+  | "remove_variable_mode"
   | "set_stroke_color"
   | "move_node"
   | "resize_node"
@@ -3117,6 +3220,21 @@ type CommandParams = {
   set_blend_mode: { nodeId: string; blendMode: string };
   get_variable_collections: Record<string, never>;
   get_variables: { collectionId?: string };
+  create_variable_collection: { name: string };
+  create_variable: {
+    collectionId: string;
+    name: string;
+    type: "BOOLEAN" | "FLOAT" | "STRING" | "COLOR";
+    value?: any;
+  };
+  set_variable_value: {
+    variableId: string;
+    modeId: string;
+    value: any;
+  };
+  add_variable_mode: { collectionId: string; name: string };
+  rename_variable_mode: { collectionId: string; modeId: string; name: string };
+  remove_variable_mode: { collectionId: string; modeId: string };
   set_stroke_color: {
     nodeId: string;
     r: number;

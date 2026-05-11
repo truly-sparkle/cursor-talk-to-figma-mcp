@@ -162,6 +162,18 @@ async function handleCommand(command, params) {
       return await getVariableCollections(params);
     case "get_variables":
       return await getVariables(params);
+    case "create_variable_collection":
+      return await createVariableCollection(params);
+    case "create_variable":
+      return await createVariable(params);
+    case "set_variable_value":
+      return await setVariableValue(params);
+    case "add_variable_mode":
+      return await addVariableMode(params);
+    case "rename_variable_mode":
+      return await renameVariableMode(params);
+    case "remove_variable_mode":
+      return await removeVariableMode(params);
     case "rename_node":
       return await renameNode(params);
     case "set_opacity":
@@ -1348,6 +1360,111 @@ async function getVariables(params) {
     count: filtered.length,
     variables: filtered.map(summarizeVariable),
   };
+}
+
+// ---- Design System: Variables (write) -----------------------------
+
+const VARIABLE_TYPES = new Set(["BOOLEAN", "FLOAT", "STRING", "COLOR"]);
+
+async function createVariableCollection(params) {
+  const { name } = params || {};
+  if (!name || typeof name !== "string") {
+    throw new Error("'name' must be a non-empty string");
+  }
+  const collection = figma.variables.createVariableCollection(name);
+  return summarizeCollection(collection);
+}
+
+async function createVariable(params) {
+  const { collectionId, name, type, value } = params || {};
+  if (!collectionId) throw new Error("Missing collectionId");
+  if (!name) throw new Error("Missing name");
+  if (!VARIABLE_TYPES.has(type)) {
+    throw new Error(`Invalid type: ${type} (allowed: BOOLEAN, FLOAT, STRING, COLOR)`);
+  }
+  const collection = await figma.variables.getVariableCollectionByIdAsync(collectionId);
+  if (!collection) throw new Error(`Collection not found: ${collectionId}`);
+
+  const variable = figma.variables.createVariable(name, collection, type);
+
+  // Optionally seed an initial value for the collection's default mode
+  if (value !== undefined) {
+    variable.setValueForMode(collection.defaultModeId, normalizeVariableValue(type, value));
+  }
+
+  return summarizeVariable(variable);
+}
+
+function normalizeVariableValue(type, value) {
+  if (type === "COLOR") {
+    if (!value || typeof value !== "object") {
+      throw new Error("COLOR value must be {r,g,b,a?} with 0-1 channels");
+    }
+    return {
+      r: Math.max(0, Math.min(1, Number(value.r) || 0)),
+      g: Math.max(0, Math.min(1, Number(value.g) || 0)),
+      b: Math.max(0, Math.min(1, Number(value.b) || 0)),
+      a: value.a == null ? 1 : Math.max(0, Math.min(1, Number(value.a))),
+    };
+  }
+  if (type === "FLOAT") {
+    const n = Number(value);
+    if (!isFinite(n)) throw new Error("FLOAT value must be a finite number");
+    return n;
+  }
+  if (type === "BOOLEAN") {
+    if (typeof value !== "boolean") throw new Error("BOOLEAN value must be true/false");
+    return value;
+  }
+  if (type === "STRING") {
+    if (typeof value !== "string") throw new Error("STRING value must be a string");
+    return value;
+  }
+  throw new Error("Unknown variable type: " + type);
+}
+
+async function setVariableValue(params) {
+  const { variableId, modeId, value } = params || {};
+  if (!variableId) throw new Error("Missing variableId");
+  if (!modeId) throw new Error("Missing modeId");
+
+  const variable = await figma.variables.getVariableByIdAsync(variableId);
+  if (!variable) throw new Error(`Variable not found: ${variableId}`);
+
+  variable.setValueForMode(modeId, normalizeVariableValue(variable.resolvedType, value));
+  return summarizeVariable(variable);
+}
+
+async function getCollectionOrThrow(collectionId) {
+  if (!collectionId) throw new Error("Missing collectionId");
+  const collection = await figma.variables.getVariableCollectionByIdAsync(collectionId);
+  if (!collection) throw new Error(`Collection not found: ${collectionId}`);
+  return collection;
+}
+
+async function addVariableMode(params) {
+  const { collectionId, name } = params || {};
+  if (!name) throw new Error("Missing name");
+  const collection = await getCollectionOrThrow(collectionId);
+  const modeId = collection.addMode(name);
+  return { modeId, name, collectionId, modes: collection.modes };
+}
+
+async function renameVariableMode(params) {
+  const { collectionId, modeId, name } = params || {};
+  if (!modeId) throw new Error("Missing modeId");
+  if (!name) throw new Error("Missing name");
+  const collection = await getCollectionOrThrow(collectionId);
+  collection.renameMode(modeId, name);
+  return { modeId, name, collectionId, modes: collection.modes };
+}
+
+async function removeVariableMode(params) {
+  const { collectionId, modeId } = params || {};
+  if (!modeId) throw new Error("Missing modeId");
+  const collection = await getCollectionOrThrow(collectionId);
+  collection.removeMode(modeId);
+  return { collectionId, modes: collection.modes };
 }
 
 // ---- Trivial node-property helpers --------------------------------

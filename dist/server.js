@@ -823,6 +823,85 @@ server.tool(
     }
   }
 );
+function variableTool(name, description, paramSchema, successText) {
+  server.tool(name, description, paramSchema, async (args2) => {
+    try {
+      const result = await sendCommandToFigma(name, args2);
+      return {
+        content: [
+          { type: "text", text: successText(result) },
+          { type: "text", text: JSON.stringify(result, null, 2) }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error in ${name}: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  });
+}
+variableTool(
+  "create_variable_collection",
+  "Create a new Figma Variable collection. Returns the collection with its auto-generated default modeId \u2014 capture this to set values later.",
+  {
+    name: z.string().min(1).describe("Collection name, e.g. 'colors' or 'spacing'")
+  },
+  (r) => `Created collection "${r.name}" (id: ${r.id}, defaultModeId: ${r.defaultModeId})`
+);
+variableTool(
+  "create_variable",
+  "Create a Variable inside a collection. Optionally seed an initial value for the collection's default mode.\n- COLOR value: { r, g, b, a? } with 0-1 channels\n- FLOAT: number\n- BOOLEAN: true/false\n- STRING: string",
+  {
+    collectionId: z.string().describe("Target collection id"),
+    name: z.string().min(1).describe("Variable name, e.g. 'color/brand/500' (slashes create groups)"),
+    type: z.enum(["BOOLEAN", "FLOAT", "STRING", "COLOR"]).describe("Variable type"),
+    value: z.any().optional().describe("Optional initial value for the default mode")
+  },
+  (r) => `Created variable "${r.name}" (${r.resolvedType}, id: ${r.id})`
+);
+variableTool(
+  "set_variable_value",
+  "Set a Variable's value for a specific mode. Value is validated against the variable's resolvedType.",
+  {
+    variableId: z.string().describe("Variable id"),
+    modeId: z.string().describe("Mode id (from the parent collection's modes)"),
+    value: z.any().describe("Value matching the variable's type")
+  },
+  (r) => `Set value of "${r.name}" for mode`
+);
+variableTool(
+  "add_variable_mode",
+  "Add a new mode to a variable collection (e.g. 'dark', 'compact'). Returns the new modeId \u2014 use it with set_variable_value.",
+  {
+    collectionId: z.string().describe("Collection id"),
+    name: z.string().min(1).describe("Mode name, e.g. 'dark'")
+  },
+  (r) => `Added mode "${r.name}" (modeId: ${r.modeId})`
+);
+variableTool(
+  "rename_variable_mode",
+  "Rename a mode within a collection.",
+  {
+    collectionId: z.string().describe("Collection id"),
+    modeId: z.string().describe("Mode id to rename"),
+    name: z.string().min(1).describe("New mode name")
+  },
+  (r) => `Renamed mode ${r.modeId} to "${r.name}"`
+);
+variableTool(
+  "remove_variable_mode",
+  "Remove a mode from a collection. The collection must have at least one remaining mode.",
+  {
+    collectionId: z.string().describe("Collection id"),
+    modeId: z.string().describe("Mode id to remove")
+  },
+  (_r) => `Removed mode`
+);
 server.tool(
   "set_stroke_color",
   "Set the stroke color of a node in Figma",
