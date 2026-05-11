@@ -180,6 +180,14 @@ async function handleCommand(command, params) {
       return await unbindNodeVariable(params);
     case "set_variable_alias":
       return await setVariableAlias(params);
+    case "create_paint_style":
+      return await createPaintStyle(params);
+    case "create_text_style":
+      return await createTextStyle(params);
+    case "create_effect_style":
+      return await createEffectStyle(params);
+    case "create_grid_style":
+      return await createGridStyle(params);
     case "rename_node":
       return await renameNode(params);
     case "set_opacity":
@@ -1581,6 +1589,124 @@ async function setVariableAlias(params) {
   source.setValueForMode(modeId, aliasValue);
 
   return summarizeVariable(source);
+}
+
+// ---- Design System: Styles (create) -------------------------------
+
+function summarizeStyle(s) {
+  return {
+    id: s.id,
+    name: s.name,
+    type: s.type,
+    key: s.key,
+    description: s.description,
+    remote: s.remote,
+  };
+}
+
+function clamp01(v) {
+  var n = typeof v === "number" && isFinite(v) ? v : 0;
+  return Math.max(0, Math.min(1, n));
+}
+
+// Normalize a SOLID paint passed by the caller into Figma's strict shape.
+// GRADIENT_* and IMAGE paints pass through (caller must supply valid shape).
+function normalizePaintForStyle(p) {
+  if (!p || typeof p !== "object") {
+    throw new Error("Each paint must be an object with a 'type' field");
+  }
+  if (p.type === "SOLID") {
+    var c = p.color || {};
+    return {
+      type: "SOLID",
+      color: { r: clamp01(c.r), g: clamp01(c.g), b: clamp01(c.b) },
+      opacity: p.opacity == null ? 1 : clamp01(p.opacity),
+      visible: p.visible !== false,
+      blendMode: p.blendMode || "NORMAL",
+    };
+  }
+  return p;
+}
+
+async function createPaintStyle(params) {
+  const { name, paints, description } = params || {};
+  if (!name) throw new Error("Missing name");
+  if (!Array.isArray(paints) || paints.length === 0) {
+    throw new Error("'paints' must be a non-empty array");
+  }
+  const style = figma.createPaintStyle();
+  style.name = name;
+  if (description) style.description = description;
+  style.paints = paints.map(normalizePaintForStyle);
+  return summarizeStyle(style);
+}
+
+async function createTextStyle(params) {
+  const {
+    name, description,
+    fontFamily, fontStyle, fontSize,
+    letterSpacing, lineHeight,
+    textCase, textDecoration,
+    paragraphSpacing, paragraphIndent,
+  } = params || {};
+
+  if (!name) throw new Error("Missing name");
+  if (!fontFamily || !fontStyle) throw new Error("Text style requires fontFamily + fontStyle");
+  if (typeof fontSize !== "number") throw new Error("Text style requires numeric fontSize");
+
+  await figma.loadFontAsync({ family: fontFamily, style: fontStyle });
+
+  const style = figma.createTextStyle();
+  style.name = name;
+  if (description) style.description = description;
+  style.fontName = { family: fontFamily, style: fontStyle };
+  style.fontSize = fontSize;
+
+  if (letterSpacing !== undefined) {
+    style.letterSpacing = typeof letterSpacing === "number"
+      ? { value: letterSpacing, unit: "PIXELS" }
+      : letterSpacing;
+  }
+  if (lineHeight !== undefined) {
+    if (lineHeight === "AUTO") style.lineHeight = { unit: "AUTO" };
+    else if (typeof lineHeight === "number") {
+      style.lineHeight = { value: lineHeight, unit: "PIXELS" };
+    } else {
+      style.lineHeight = lineHeight;
+    }
+  }
+  if (textCase) style.textCase = textCase;
+  if (textDecoration) style.textDecoration = textDecoration;
+  if (typeof paragraphSpacing === "number") style.paragraphSpacing = paragraphSpacing;
+  if (typeof paragraphIndent === "number") style.paragraphIndent = paragraphIndent;
+
+  return summarizeStyle(style);
+}
+
+async function createEffectStyle(params) {
+  const { name, effects, description } = params || {};
+  if (!name) throw new Error("Missing name");
+  if (!Array.isArray(effects) || effects.length === 0) {
+    throw new Error("'effects' must be a non-empty array");
+  }
+  const style = figma.createEffectStyle();
+  style.name = name;
+  if (description) style.description = description;
+  style.effects = effects.map(normalizeEffect);  // shared with setEffects
+  return summarizeStyle(style);
+}
+
+async function createGridStyle(params) {
+  const { name, layoutGrids, description } = params || {};
+  if (!name) throw new Error("Missing name");
+  if (!Array.isArray(layoutGrids) || layoutGrids.length === 0) {
+    throw new Error("'layoutGrids' must be a non-empty array");
+  }
+  const style = figma.createGridStyle();
+  style.name = name;
+  if (description) style.description = description;
+  style.layoutGrids = layoutGrids;
+  return summarizeStyle(style);
 }
 
 async function unbindNodeVariable(params) {

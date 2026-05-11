@@ -1186,6 +1186,109 @@ variableTool(
   (r: any) => `Set "${r.name}" mode value → alias of ${r.id}`,
 );
 
+// ---- Design System: Styles (create) -------------------------------
+
+function styleTool(
+  name: string,
+  description: string,
+  paramSchema: Record<string, any>,
+  successText: (typed: any) => string,
+) {
+  server.tool(name, description, paramSchema, async (args: any) => {
+    try {
+      const result = await sendCommandToFigma(name as any, args);
+      return {
+        content: [
+          { type: "text", text: successText(result) },
+          { type: "text", text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error in ${name}: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  });
+}
+
+styleTool(
+  "create_paint_style",
+  "Create a Paint style (color/gradient/image fill token). Multiple paints are allowed — they stack. " +
+  "SOLID paints get color {r,g,b} 0-1 clamping; GRADIENT/IMAGE paints pass through (you must supply valid shape).",
+  {
+    name: z.string().min(1).describe("Style name, e.g. 'color/brand/primary' (slashes create groups)"),
+    paints: z.array(z.any()).describe("Paint array. SOLID: { type:'SOLID', color:{r,g,b}, opacity? }"),
+    description: z.string().optional(),
+  },
+  (r: any) => `Created paint style "${r.name}" (${r.id})`,
+);
+
+styleTool(
+  "create_text_style",
+  "Create a Text style. Font is loaded automatically before being applied to the style.",
+  {
+    name: z.string().min(1).describe("Style name, e.g. 'text/heading/lg'"),
+    fontFamily: z.string().describe("e.g. 'Inter'"),
+    fontStyle: z.string().describe("e.g. 'Regular', 'Bold'"),
+    fontSize: z.number().positive(),
+    letterSpacing: z.union([
+      z.number(),
+      z.object({ value: z.number(), unit: z.enum(["PIXELS", "PERCENT"]) }),
+    ]).optional(),
+    lineHeight: z.union([
+      z.number(),
+      z.literal("AUTO"),
+      z.object({ value: z.number(), unit: z.enum(["PIXELS", "PERCENT"]) }),
+    ]).optional(),
+    textCase: z.enum(["ORIGINAL", "UPPER", "LOWER", "TITLE", "SMALL_CAPS", "SMALL_CAPS_FORCED"]).optional(),
+    textDecoration: z.enum(["NONE", "UNDERLINE", "STRIKETHROUGH"]).optional(),
+    paragraphSpacing: z.number().nonnegative().optional(),
+    paragraphIndent: z.number().nonnegative().optional(),
+    description: z.string().optional(),
+  },
+  (r: any) => `Created text style "${r.name}" (${r.id})`,
+);
+
+styleTool(
+  "create_effect_style",
+  "Create an Effect style (shadow/blur token). Effect shape matches set_effects.",
+  {
+    name: z.string().min(1),
+    effects: z.array(z.object({
+      type: z.enum(["DROP_SHADOW", "INNER_SHADOW", "LAYER_BLUR", "BACKGROUND_BLUR"]),
+      color: z.object({
+        r: z.number().min(0).max(1),
+        g: z.number().min(0).max(1),
+        b: z.number().min(0).max(1),
+        a: z.number().min(0).max(1).optional(),
+      }).optional(),
+      offset: z.object({ x: z.number(), y: z.number() }).optional(),
+      radius: z.number().nonnegative().optional(),
+      spread: z.number().optional(),
+      blendMode: z.string().optional(),
+      visible: z.boolean().optional(),
+    })),
+    description: z.string().optional(),
+  },
+  (r: any) => `Created effect style "${r.name}" (${r.id})`,
+);
+
+styleTool(
+  "create_grid_style",
+  "Create a Layout Grid style. layoutGrids is an array of grid configs (COLUMNS/ROWS/GRID).",
+  {
+    name: z.string().min(1),
+    layoutGrids: z.array(z.any()).describe("Layout grid array, e.g. [{ pattern:'COLUMNS', count:12, gutterSize:16 }]"),
+    description: z.string().optional(),
+  },
+  (r: any) => `Created grid style "${r.name}" (${r.id})`,
+);
+
 // -------------------------------------------------------------------
 
 // Set Stroke Color Tool
@@ -3194,6 +3297,10 @@ type FigmaCommand =
   | "bind_node_variable"
   | "unbind_node_variable"
   | "set_variable_alias"
+  | "create_paint_style"
+  | "create_text_style"
+  | "create_effect_style"
+  | "create_grid_style"
   | "set_stroke_color"
   | "move_node"
   | "resize_node"
@@ -3348,6 +3455,34 @@ type CommandParams = {
     variableId: string;
     modeId: string;
     targetVariableId: string;
+  };
+  create_paint_style: {
+    name: string;
+    paints: any[];
+    description?: string;
+  };
+  create_text_style: {
+    name: string;
+    fontFamily: string;
+    fontStyle: string;
+    fontSize: number;
+    letterSpacing?: number | { value: number; unit: "PIXELS" | "PERCENT" };
+    lineHeight?: number | "AUTO" | { value: number; unit: "PIXELS" | "PERCENT" };
+    textCase?: "ORIGINAL" | "UPPER" | "LOWER" | "TITLE" | "SMALL_CAPS" | "SMALL_CAPS_FORCED";
+    textDecoration?: "NONE" | "UNDERLINE" | "STRIKETHROUGH";
+    paragraphSpacing?: number;
+    paragraphIndent?: number;
+    description?: string;
+  };
+  create_effect_style: {
+    name: string;
+    effects: any[];
+    description?: string;
+  };
+  create_grid_style: {
+    name: string;
+    layoutGrids: any[];
+    description?: string;
   };
   set_stroke_color: {
     nodeId: string;

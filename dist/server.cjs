@@ -985,6 +985,96 @@ variableTool(
   },
   (r) => `Set "${r.name}" mode value \u2192 alias of ${r.id}`
 );
+function styleTool(name, description, paramSchema, successText) {
+  server.tool(name, description, paramSchema, async (args2) => {
+    try {
+      const result = await sendCommandToFigma(name, args2);
+      return {
+        content: [
+          { type: "text", text: successText(result) },
+          { type: "text", text: JSON.stringify(result, null, 2) }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error in ${name}: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  });
+}
+styleTool(
+  "create_paint_style",
+  "Create a Paint style (color/gradient/image fill token). Multiple paints are allowed \u2014 they stack. SOLID paints get color {r,g,b} 0-1 clamping; GRADIENT/IMAGE paints pass through (you must supply valid shape).",
+  {
+    name: import_zod.z.string().min(1).describe("Style name, e.g. 'color/brand/primary' (slashes create groups)"),
+    paints: import_zod.z.array(import_zod.z.any()).describe("Paint array. SOLID: { type:'SOLID', color:{r,g,b}, opacity? }"),
+    description: import_zod.z.string().optional()
+  },
+  (r) => `Created paint style "${r.name}" (${r.id})`
+);
+styleTool(
+  "create_text_style",
+  "Create a Text style. Font is loaded automatically before being applied to the style.",
+  {
+    name: import_zod.z.string().min(1).describe("Style name, e.g. 'text/heading/lg'"),
+    fontFamily: import_zod.z.string().describe("e.g. 'Inter'"),
+    fontStyle: import_zod.z.string().describe("e.g. 'Regular', 'Bold'"),
+    fontSize: import_zod.z.number().positive(),
+    letterSpacing: import_zod.z.union([
+      import_zod.z.number(),
+      import_zod.z.object({ value: import_zod.z.number(), unit: import_zod.z.enum(["PIXELS", "PERCENT"]) })
+    ]).optional(),
+    lineHeight: import_zod.z.union([
+      import_zod.z.number(),
+      import_zod.z.literal("AUTO"),
+      import_zod.z.object({ value: import_zod.z.number(), unit: import_zod.z.enum(["PIXELS", "PERCENT"]) })
+    ]).optional(),
+    textCase: import_zod.z.enum(["ORIGINAL", "UPPER", "LOWER", "TITLE", "SMALL_CAPS", "SMALL_CAPS_FORCED"]).optional(),
+    textDecoration: import_zod.z.enum(["NONE", "UNDERLINE", "STRIKETHROUGH"]).optional(),
+    paragraphSpacing: import_zod.z.number().nonnegative().optional(),
+    paragraphIndent: import_zod.z.number().nonnegative().optional(),
+    description: import_zod.z.string().optional()
+  },
+  (r) => `Created text style "${r.name}" (${r.id})`
+);
+styleTool(
+  "create_effect_style",
+  "Create an Effect style (shadow/blur token). Effect shape matches set_effects.",
+  {
+    name: import_zod.z.string().min(1),
+    effects: import_zod.z.array(import_zod.z.object({
+      type: import_zod.z.enum(["DROP_SHADOW", "INNER_SHADOW", "LAYER_BLUR", "BACKGROUND_BLUR"]),
+      color: import_zod.z.object({
+        r: import_zod.z.number().min(0).max(1),
+        g: import_zod.z.number().min(0).max(1),
+        b: import_zod.z.number().min(0).max(1),
+        a: import_zod.z.number().min(0).max(1).optional()
+      }).optional(),
+      offset: import_zod.z.object({ x: import_zod.z.number(), y: import_zod.z.number() }).optional(),
+      radius: import_zod.z.number().nonnegative().optional(),
+      spread: import_zod.z.number().optional(),
+      blendMode: import_zod.z.string().optional(),
+      visible: import_zod.z.boolean().optional()
+    })),
+    description: import_zod.z.string().optional()
+  },
+  (r) => `Created effect style "${r.name}" (${r.id})`
+);
+styleTool(
+  "create_grid_style",
+  "Create a Layout Grid style. layoutGrids is an array of grid configs (COLUMNS/ROWS/GRID).",
+  {
+    name: import_zod.z.string().min(1),
+    layoutGrids: import_zod.z.array(import_zod.z.any()).describe("Layout grid array, e.g. [{ pattern:'COLUMNS', count:12, gutterSize:16 }]"),
+    description: import_zod.z.string().optional()
+  },
+  (r) => `Created grid style "${r.name}" (${r.id})`
+);
 server.tool(
   "set_stroke_color",
   "Set the stroke color of a node in Figma",
