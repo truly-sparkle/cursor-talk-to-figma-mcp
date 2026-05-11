@@ -1127,6 +1127,36 @@ styleTool(
   },
   (r) => `Swapped "${r.name}" \u2192 main: "${r.mainComponent.name}" (${r.mainComponent.id})`
 );
+styleTool(
+  "create_component_set",
+  "Combine sibling Components into a Component Set (variants). All ids must be COMPONENT nodes. Their parent (or current page) becomes the parent of the new set. Optional name renames the set.",
+  {
+    componentIds: import_zod.z.array(import_zod.z.string()).min(1).describe("Component ids to combine as variants"),
+    name: import_zod.z.string().optional().describe("Optional name for the resulting Component Set")
+  },
+  (r) => `Created component set "${r.name}" (${r.id}) with ${r.variantCount} variant(s)`
+);
+styleTool(
+  "add_component_property",
+  "Add a Component Property definition to a Component Set or Component. Returns the propertyId \u2014 use it as a key in set_component_property.\n- BOOLEAN: defaultValue is true/false\n- TEXT:    defaultValue is a string\n- INSTANCE_SWAP: defaultValue is a component id; options.preferredValues is allowed\n- VARIANT: rare in code (Figma derives variants from naming convention)",
+  {
+    componentSetId: import_zod.z.string().describe("Target COMPONENT_SET or COMPONENT id"),
+    name: import_zod.z.string().min(1),
+    type: import_zod.z.enum(["BOOLEAN", "TEXT", "INSTANCE_SWAP", "VARIANT"]),
+    defaultValue: import_zod.z.any(),
+    options: import_zod.z.record(import_zod.z.any()).optional()
+  },
+  (r) => `Added property "${r.name}" (${r.type}, propertyId: ${r.propertyId})`
+);
+styleTool(
+  "set_component_property",
+  "Set Component Property values on an instance. properties is { propertyId: value }. Use add_component_property's returned propertyId as the key (it's something like 'Variant#123:0').",
+  {
+    instanceId: import_zod.z.string().describe("Instance node id"),
+    properties: import_zod.z.record(import_zod.z.any()).describe("{ propertyId: value } map")
+  },
+  (r) => `Set component properties on "${r.name}"`
+);
 server.tool(
   "set_stroke_color",
   "Set the stroke color of a node in Figma",

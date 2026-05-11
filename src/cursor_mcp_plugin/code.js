@@ -200,6 +200,12 @@ async function handleCommand(command, params) {
       return await detachInstance(params);
     case "swap_instance":
       return await swapInstance(params);
+    case "create_component_set":
+      return await createComponentSet(params);
+    case "add_component_property":
+      return await addComponentProperty(params);
+    case "set_component_property":
+      return await setComponentProperty(params);
     case "rename_node":
       return await renameNode(params);
     case "set_opacity":
@@ -1853,6 +1859,86 @@ async function swapInstance(params) {
     id: instance.id,
     name: instance.name,
     mainComponent: { id: main.id, name: main.name },
+  };
+}
+
+// ---- Design System: Component Set + Properties --------------------
+
+async function createComponentSet(params) {
+  const { componentIds, name } = params || {};
+  if (!Array.isArray(componentIds) || componentIds.length === 0) {
+    throw new Error("'componentIds' must be a non-empty array");
+  }
+  const components = [];
+  for (const id of componentIds) {
+    const c = await figma.getNodeByIdAsync(id);
+    if (!c) throw new Error(`Component not found: ${id}`);
+    if (c.type !== "COMPONENT") {
+      throw new Error(`Not a component: ${id} (${c.type})`);
+    }
+    components.push(c);
+  }
+  // combineAsVariants requires a parent. Use the first component's parent
+  // (variants must come from siblings) or fall back to current page.
+  const parent = components[0].parent || figma.currentPage;
+  const set = figma.combineAsVariants(components, parent);
+  if (name && typeof name === "string") set.name = name;
+  return {
+    id: set.id,
+    name: set.name,
+    type: set.type,
+    variantCount: components.length,
+  };
+}
+
+const VALID_PROPERTY_TYPES = new Set(["BOOLEAN", "TEXT", "INSTANCE_SWAP", "VARIANT"]);
+
+async function addComponentProperty(params) {
+  const { componentSetId, name, type, defaultValue, options } = params || {};
+  if (!componentSetId) throw new Error("Missing componentSetId");
+  if (!name) throw new Error("Missing name");
+  if (!VALID_PROPERTY_TYPES.has(type)) {
+    throw new Error(`Invalid type: ${type} (allowed: ${Array.from(VALID_PROPERTY_TYPES).join(", ")})`);
+  }
+
+  const target = await figma.getNodeByIdAsync(componentSetId);
+  if (!target) throw new Error(`Node not found: ${componentSetId}`);
+  if (target.type !== "COMPONENT_SET" && target.type !== "COMPONENT") {
+    throw new Error(`Target must be COMPONENT_SET or COMPONENT, got ${target.type}`);
+  }
+
+  // INSTANCE_SWAP can take preferredValues option (array of {type:'COMPONENT', key} etc.)
+  // VARIANT requires a list of variant option strings.
+  const opts = options && typeof options === "object" ? options : undefined;
+
+  const propertyId = target.addComponentProperty(name, type, defaultValue, opts);
+  return {
+    propertyId,
+    name,
+    type,
+    defaultValue,
+    componentPropertyDefinitions: target.componentPropertyDefinitions,
+  };
+}
+
+async function setComponentProperty(params) {
+  const { instanceId, properties } = params || {};
+  if (!instanceId) throw new Error("Missing instanceId");
+  if (!properties || typeof properties !== "object") {
+    throw new Error("'properties' must be an object { propertyId: value }");
+  }
+
+  const instance = await figma.getNodeByIdAsync(instanceId);
+  if (!instance) throw new Error(`Instance not found: ${instanceId}`);
+  if (instance.type !== "INSTANCE") {
+    throw new Error(`Not an instance: ${instanceId} (${instance.type})`);
+  }
+
+  instance.setProperties(properties);
+  return {
+    id: instance.id,
+    name: instance.name,
+    componentProperties: instance.componentProperties,
   };
 }
 

@@ -1361,6 +1361,48 @@ styleTool(
   (r: any) => `Swapped "${r.name}" → main: "${r.mainComponent.name}" (${r.mainComponent.id})`,
 );
 
+// ---- Design System: Component Set + Properties --------------------
+
+styleTool(
+  "create_component_set",
+  "Combine sibling Components into a Component Set (variants). All ids must be COMPONENT nodes. " +
+  "Their parent (or current page) becomes the parent of the new set. Optional name renames the set.",
+  {
+    componentIds: z.array(z.string()).min(1).describe("Component ids to combine as variants"),
+    name: z.string().optional().describe("Optional name for the resulting Component Set"),
+  },
+  (r: any) => `Created component set "${r.name}" (${r.id}) with ${r.variantCount} variant(s)`,
+);
+
+styleTool(
+  "add_component_property",
+  "Add a Component Property definition to a Component Set or Component. " +
+  "Returns the propertyId — use it as a key in set_component_property.\n" +
+  "- BOOLEAN: defaultValue is true/false\n" +
+  "- TEXT:    defaultValue is a string\n" +
+  "- INSTANCE_SWAP: defaultValue is a component id; options.preferredValues is allowed\n" +
+  "- VARIANT: rare in code (Figma derives variants from naming convention)",
+  {
+    componentSetId: z.string().describe("Target COMPONENT_SET or COMPONENT id"),
+    name: z.string().min(1),
+    type: z.enum(["BOOLEAN", "TEXT", "INSTANCE_SWAP", "VARIANT"]),
+    defaultValue: z.any(),
+    options: z.record(z.any()).optional(),
+  },
+  (r: any) => `Added property "${r.name}" (${r.type}, propertyId: ${r.propertyId})`,
+);
+
+styleTool(
+  "set_component_property",
+  "Set Component Property values on an instance. properties is { propertyId: value }. " +
+  "Use add_component_property's returned propertyId as the key (it's something like 'Variant#123:0').",
+  {
+    instanceId: z.string().describe("Instance node id"),
+    properties: z.record(z.any()).describe("{ propertyId: value } map"),
+  },
+  (r: any) => `Set component properties on "${r.name}"`,
+);
+
 // -------------------------------------------------------------------
 
 // Set Stroke Color Tool
@@ -3379,6 +3421,9 @@ type FigmaCommand =
   | "create_component_from_node"
   | "detach_instance"
   | "swap_instance"
+  | "create_component_set"
+  | "add_component_property"
+  | "set_component_property"
   | "set_stroke_color"
   | "move_node"
   | "resize_node"
@@ -3572,6 +3617,18 @@ type CommandParams = {
   create_component_from_node: { nodeId: string };
   detach_instance: { nodeId: string };
   swap_instance: { nodeId: string; mainComponentId: string };
+  create_component_set: { componentIds: string[]; name?: string };
+  add_component_property: {
+    componentSetId: string;
+    name: string;
+    type: "BOOLEAN" | "TEXT" | "INSTANCE_SWAP" | "VARIANT";
+    defaultValue: any;
+    options?: Record<string, any>;
+  };
+  set_component_property: {
+    instanceId: string;
+    properties: Record<string, any>;
+  };
   set_stroke_color: {
     nodeId: string;
     r: number;
