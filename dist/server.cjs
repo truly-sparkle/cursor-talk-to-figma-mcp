@@ -1075,6 +1075,33 @@ styleTool(
   },
   (r) => `Created grid style "${r.name}" (${r.id})`
 );
+styleTool(
+  "apply_style",
+  "Apply a Style to a node. target picks which slot on the node:\n- fill   \u2192 fillStyleId   (PAINT style)\n- stroke \u2192 strokeStyleId (PAINT style)\n- text   \u2192 textStyleId   (TEXT style)\n- effect \u2192 effectStyleId (EFFECT style)\n- grid   \u2192 gridStyleId   (GRID style)\nStyle type is verified against target before applying.",
+  {
+    nodeId: import_zod.z.string().describe("Target node id"),
+    styleId: import_zod.z.string().describe("Style id to apply"),
+    target: import_zod.z.enum(["fill", "stroke", "text", "effect", "grid"])
+  },
+  (r) => `Applied "${r.styleName}" to ${r.name}.${r.target}`
+);
+styleTool(
+  "rename_style",
+  "Rename a Style. Use slashes in the name to organize into groups (e.g. 'color/brand/primary').",
+  {
+    styleId: import_zod.z.string(),
+    name: import_zod.z.string().min(1)
+  },
+  (r) => `Renamed style ${r.id} \u2192 "${r.name}"`
+);
+styleTool(
+  "delete_style",
+  "Delete a Style. Nodes that referenced it lose the binding (their last cached values remain).",
+  {
+    styleId: import_zod.z.string()
+  },
+  (r) => `Deleted style "${r.name}" (${r.id})`
+);
 server.tool(
   "set_stroke_color",
   "Set the stroke color of a node in Figma",

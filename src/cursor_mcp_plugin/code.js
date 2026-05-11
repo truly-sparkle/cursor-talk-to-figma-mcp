@@ -188,6 +188,12 @@ async function handleCommand(command, params) {
       return await createEffectStyle(params);
     case "create_grid_style":
       return await createGridStyle(params);
+    case "apply_style":
+      return await applyStyle(params);
+    case "rename_style":
+      return await renameStyle(params);
+    case "delete_style":
+      return await deleteStyle(params);
     case "rename_node":
       return await renameNode(params);
     case "set_opacity":
@@ -1707,6 +1713,80 @@ async function createGridStyle(params) {
   if (description) style.description = description;
   style.layoutGrids = layoutGrids;
   return summarizeStyle(style);
+}
+
+// ---- Design System: Styles (apply / rename / delete) --------------
+
+// Map of node-style-target → setter info. Modern API requires Async setters
+// when documentAccess: "dynamic-page"; we use the async variants throughout.
+const STYLE_TARGETS = {
+  fill:   { idField: "fillStyleId",   setter: "setFillStyleIdAsync"   },
+  stroke: { idField: "strokeStyleId", setter: "setStrokeStyleIdAsync" },
+  text:   { idField: "textStyleId",   setter: "setTextStyleIdAsync"   },
+  effect: { idField: "effectStyleId", setter: "setEffectStyleIdAsync" },
+  grid:   { idField: "gridStyleId",   setter: "setGridStyleIdAsync"   },
+};
+
+async function applyStyle(params) {
+  const { nodeId, styleId, target } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (!styleId) throw new Error("Missing styleId");
+  const cfg = STYLE_TARGETS[target];
+  if (!cfg) throw new Error(`Invalid target: ${target} (allowed: fill, stroke, text, effect, grid)`);
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found: ${nodeId}`);
+
+  // Verify the style exists and matches the target
+  const style = await figma.getStyleByIdAsync(styleId);
+  if (!style) throw new Error(`Style not found: ${styleId}`);
+
+  // text target must use TEXT style, etc.
+  const expectedStyleType =
+    target === "text" ? "TEXT" :
+    target === "effect" ? "EFFECT" :
+    target === "grid" ? "GRID" :
+    "PAINT"; // fill | stroke
+  if (style.type !== expectedStyleType) {
+    throw new Error(`Style type mismatch: target '${target}' needs ${expectedStyleType}, got ${style.type}`);
+  }
+
+  if (typeof node[cfg.setter] === "function") {
+    await node[cfg.setter](styleId);
+  } else if (cfg.idField in node) {
+    // Fallback for older runtimes; readonly in dynamic-page mode
+    node[cfg.idField] = styleId;
+  } else {
+    throw new Error(`Node does not support ${cfg.idField}: ${node.type}`);
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    target,
+    styleId,
+    styleName: style.name,
+  };
+}
+
+async function renameStyle(params) {
+  const { styleId, name } = params || {};
+  if (!styleId) throw new Error("Missing styleId");
+  if (!name) throw new Error("Missing name");
+  const style = await figma.getStyleByIdAsync(styleId);
+  if (!style) throw new Error(`Style not found: ${styleId}`);
+  style.name = name;
+  return summarizeStyle(style);
+}
+
+async function deleteStyle(params) {
+  const { styleId } = params || {};
+  if (!styleId) throw new Error("Missing styleId");
+  const style = await figma.getStyleByIdAsync(styleId);
+  if (!style) throw new Error(`Style not found: ${styleId}`);
+  const summary = summarizeStyle(style);
+  style.remove();
+  return { ...summary, removed: true };
 }
 
 async function unbindNodeVariable(params) {

@@ -1289,6 +1289,42 @@ styleTool(
   (r: any) => `Created grid style "${r.name}" (${r.id})`,
 );
 
+styleTool(
+  "apply_style",
+  "Apply a Style to a node. target picks which slot on the node:\n" +
+  "- fill   → fillStyleId   (PAINT style)\n" +
+  "- stroke → strokeStyleId (PAINT style)\n" +
+  "- text   → textStyleId   (TEXT style)\n" +
+  "- effect → effectStyleId (EFFECT style)\n" +
+  "- grid   → gridStyleId   (GRID style)\n" +
+  "Style type is verified against target before applying.",
+  {
+    nodeId: z.string().describe("Target node id"),
+    styleId: z.string().describe("Style id to apply"),
+    target: z.enum(["fill", "stroke", "text", "effect", "grid"]),
+  },
+  (r: any) => `Applied "${r.styleName}" to ${r.name}.${r.target}`,
+);
+
+styleTool(
+  "rename_style",
+  "Rename a Style. Use slashes in the name to organize into groups (e.g. 'color/brand/primary').",
+  {
+    styleId: z.string(),
+    name: z.string().min(1),
+  },
+  (r: any) => `Renamed style ${r.id} → "${r.name}"`,
+);
+
+styleTool(
+  "delete_style",
+  "Delete a Style. Nodes that referenced it lose the binding (their last cached values remain).",
+  {
+    styleId: z.string(),
+  },
+  (r: any) => `Deleted style "${r.name}" (${r.id})`,
+);
+
 // -------------------------------------------------------------------
 
 // Set Stroke Color Tool
@@ -3301,6 +3337,9 @@ type FigmaCommand =
   | "create_text_style"
   | "create_effect_style"
   | "create_grid_style"
+  | "apply_style"
+  | "rename_style"
+  | "delete_style"
   | "set_stroke_color"
   | "move_node"
   | "resize_node"
@@ -3484,6 +3523,13 @@ type CommandParams = {
     layoutGrids: any[];
     description?: string;
   };
+  apply_style: {
+    nodeId: string;
+    styleId: string;
+    target: "fill" | "stroke" | "text" | "effect" | "grid";
+  };
+  rename_style: { styleId: string; name: string };
+  delete_style: { styleId: string };
   set_stroke_color: {
     nodeId: string;
     r: number;
