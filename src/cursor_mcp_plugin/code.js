@@ -158,6 +158,10 @@ async function handleCommand(command, params) {
       return await setEffects(params);
     case "set_text_style":
       return await setTextStyle(params);
+    case "get_variable_collections":
+      return await getVariableCollections(params);
+    case "get_variables":
+      return await getVariables(params);
     case "rename_node":
       return await renameNode(params);
     case "set_opacity":
@@ -1279,6 +1283,70 @@ async function setEffects(params) {
     id: node.id,
     name: node.name,
     effects: node.effects,
+  };
+}
+
+// ---- Design System: Variables (read) ------------------------------
+
+function summarizeCollection(c) {
+  return {
+    id: c.id,
+    name: c.name,
+    key: c.key,
+    remote: c.remote,
+    hiddenFromPublishing: c.hiddenFromPublishing,
+    defaultModeId: c.defaultModeId,
+    modes: (c.modes || []).map((m) => ({ modeId: m.modeId, name: m.name })),
+    variableIds: c.variableIds || [],
+  };
+}
+
+function summarizeVariable(v) {
+  // valuesByMode keys are modeIds; values can be primitives or VariableAlias
+  const valuesByMode = {};
+  if (v.valuesByMode) {
+    for (const [modeId, raw] of Object.entries(v.valuesByMode)) {
+      if (raw && typeof raw === "object" && raw.type === "VARIABLE_ALIAS") {
+        valuesByMode[modeId] = { type: "VARIABLE_ALIAS", id: raw.id };
+      } else if (v.resolvedType === "COLOR" && raw && typeof raw === "object") {
+        // Render color as hex for readability; keep raw too for round-tripping
+        valuesByMode[modeId] = { color: raw, hex: rgbaToHex(raw) };
+      } else {
+        valuesByMode[modeId] = raw;
+      }
+    }
+  }
+  return {
+    id: v.id,
+    name: v.name,
+    key: v.key,
+    remote: v.remote,
+    resolvedType: v.resolvedType,
+    variableCollectionId: v.variableCollectionId,
+    description: v.description,
+    hiddenFromPublishing: v.hiddenFromPublishing,
+    scopes: v.scopes,
+    valuesByMode,
+  };
+}
+
+async function getVariableCollections(_params) {
+  const collections = await figma.variables.getLocalVariableCollectionsAsync();
+  return {
+    count: collections.length,
+    collections: collections.map(summarizeCollection),
+  };
+}
+
+async function getVariables(params) {
+  const { collectionId } = params || {};
+  const all = await figma.variables.getLocalVariablesAsync();
+  const filtered = collectionId
+    ? all.filter((v) => v.variableCollectionId === collectionId)
+    : all;
+  return {
+    count: filtered.length,
+    variables: filtered.map(summarizeVariable),
   };
 }
 

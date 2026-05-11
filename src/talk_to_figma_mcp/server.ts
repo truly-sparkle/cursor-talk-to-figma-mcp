@@ -938,6 +938,66 @@ nodePropTool(
 
 // -------------------------------------------------------------------
 
+// ---- Design System: Variables (read) ------------------------------
+
+server.tool(
+  "get_variable_collections",
+  "List all local Figma Variable collections (design tokens) with their modes and member variable IDs. Foundation for design-system work — call this first to discover collections, then get_variables for the actual values.",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_variable_collections", {});
+      const typed = result as { count: number; collections: any[] };
+      return {
+        content: [
+          { type: "text", text: `Found ${typed.count} variable collection(s)` },
+          { type: "text", text: JSON.stringify(typed.collections, null, 2) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error fetching variable collections: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+server.tool(
+  "get_variables",
+  "List local Figma Variables (design tokens). Optional collectionId filter. COLOR variables are returned with both raw {r,g,b,a} and a hex string for readability. VARIABLE_ALIAS values are flagged so you can resolve aliases.",
+  {
+    collectionId: z.string().optional().describe("If provided, only variables in this collection are returned"),
+  },
+  async ({ collectionId }: any) => {
+    try {
+      const result = await sendCommandToFigma("get_variables", { collectionId });
+      const typed = result as { count: number; variables: any[] };
+      return {
+        content: [
+          { type: "text", text: `Found ${typed.count} variable(s)${collectionId ? ` in collection ${collectionId}` : ""}` },
+          { type: "text", text: JSON.stringify(typed.variables, null, 2) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error fetching variables: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// -------------------------------------------------------------------
+
 // Set Stroke Color Tool
 server.tool(
   "set_stroke_color",
@@ -2933,6 +2993,8 @@ type FigmaCommand =
   | "set_visible"
   | "set_locked"
   | "set_blend_mode"
+  | "get_variable_collections"
+  | "get_variables"
   | "set_stroke_color"
   | "move_node"
   | "resize_node"
@@ -3053,6 +3115,8 @@ type CommandParams = {
   set_visible: { nodeId: string; visible: boolean };
   set_locked: { nodeId: string; locked: boolean };
   set_blend_mode: { nodeId: string; blendMode: string };
+  get_variable_collections: Record<string, never>;
+  get_variables: { collectionId?: string };
   set_stroke_color: {
     nodeId: string;
     r: number;

@@ -770,6 +770,60 @@ nodePropTool(
   (r) => `Set "${r.name}" blendMode: ${r.blendMode}`
 );
 server.tool(
+  "get_variable_collections",
+  "List all local Figma Variable collections (design tokens) with their modes and member variable IDs. Foundation for design-system work \u2014 call this first to discover collections, then get_variables for the actual values.",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_variable_collections", {});
+      const typed = result;
+      return {
+        content: [
+          { type: "text", text: `Found ${typed.count} variable collection(s)` },
+          { type: "text", text: JSON.stringify(typed.collections, null, 2) }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error fetching variable collections: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "get_variables",
+  "List local Figma Variables (design tokens). Optional collectionId filter. COLOR variables are returned with both raw {r,g,b,a} and a hex string for readability. VARIABLE_ALIAS values are flagged so you can resolve aliases.",
+  {
+    collectionId: z.string().optional().describe("If provided, only variables in this collection are returned")
+  },
+  async ({ collectionId }) => {
+    try {
+      const result = await sendCommandToFigma("get_variables", { collectionId });
+      const typed = result;
+      return {
+        content: [
+          { type: "text", text: `Found ${typed.count} variable(s)${collectionId ? ` in collection ${collectionId}` : ""}` },
+          { type: "text", text: JSON.stringify(typed.variables, null, 2) }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error fetching variables: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
   "set_stroke_color",
   "Set the stroke color of a node in Figma",
   {
