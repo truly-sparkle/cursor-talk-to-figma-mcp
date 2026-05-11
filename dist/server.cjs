@@ -924,6 +924,30 @@ variableTool(
   },
   (_r) => `Removed mode`
 );
+var BIND_FIELDS_DESC = "fills | strokes (paint binding via paintIndex/paintProperty) OR one of: width, height, minWidth, minHeight, maxWidth, maxHeight, cornerRadius, topLeftRadius, topRightRadius, bottomLeftRadius, bottomRightRadius, paddingLeft, paddingRight, paddingTop, paddingBottom, itemSpacing, counterAxisSpacing, fontSize, lineHeight, letterSpacing, paragraphSpacing, paragraphIndent, characters, opacity, visible";
+variableTool(
+  "bind_node_variable",
+  "Bind a Variable to a node property. For fills/strokes the variable is attached to a paint at paintIndex (default 0); for everything else it's set on the node directly via setBoundVariable. The variable's resolvedType must match the field (COLOR for paint, FLOAT for sizes/spacing/font, BOOLEAN for visible, STRING for characters).",
+  {
+    nodeId: import_zod.z.string().describe("Target node id"),
+    field: import_zod.z.string().describe(BIND_FIELDS_DESC),
+    variableId: import_zod.z.string().describe("Variable id to bind"),
+    paintIndex: import_zod.z.number().int().nonnegative().optional().describe("Paint index for fills/strokes (default 0)"),
+    paintProperty: import_zod.z.enum(["color"]).optional().describe("Paint property for fills/strokes (default 'color')")
+  },
+  (r) => `Bound ${r.variableId} to ${r.name}.${r.field}`
+);
+variableTool(
+  "unbind_node_variable",
+  "Remove a Variable binding from a node property. Same field set as bind_node_variable.",
+  {
+    nodeId: import_zod.z.string().describe("Target node id"),
+    field: import_zod.z.string().describe(BIND_FIELDS_DESC),
+    paintIndex: import_zod.z.number().int().nonnegative().optional().describe("Paint index for fills/strokes (default 0)"),
+    paintProperty: import_zod.z.enum(["color"]).optional().describe("Paint property for fills/strokes (default 'color')")
+  },
+  (r) => `Unbound variable from ${r.name}.${r.field}`
+);
 server.tool(
   "set_stroke_color",
   "Set the stroke color of a node in Figma",

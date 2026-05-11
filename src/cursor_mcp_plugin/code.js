@@ -174,6 +174,10 @@ async function handleCommand(command, params) {
       return await renameVariableMode(params);
     case "remove_variable_mode":
       return await removeVariableMode(params);
+    case "bind_node_variable":
+      return await bindNodeVariable(params);
+    case "unbind_node_variable":
+      return await unbindNodeVariable(params);
     case "rename_node":
       return await renameNode(params);
     case "set_opacity":
@@ -1465,6 +1469,119 @@ async function removeVariableMode(params) {
   const collection = await getCollectionOrThrow(collectionId);
   collection.removeMode(modeId);
   return { collectionId, modes: collection.modes };
+}
+
+// ---- Design System: Variables (bind to node) ----------------------
+
+// Fields that can take a bound variable directly via setBoundVariable.
+// Anything in fills/strokes goes through the paint helper instead.
+const SIMPLE_BIND_FIELDS = new Set([
+  // Geometry
+  "width", "height",
+  "minWidth", "minHeight", "maxWidth", "maxHeight",
+  "cornerRadius",
+  "topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius",
+  // Auto-layout
+  "paddingLeft", "paddingRight", "paddingTop", "paddingBottom",
+  "itemSpacing", "counterAxisSpacing",
+  // Text
+  "fontSize", "lineHeight", "letterSpacing",
+  "paragraphSpacing", "paragraphIndent",
+  "characters", // STRING variable
+  // Visual
+  "opacity",
+  // Boolean
+  "visible",
+]);
+
+const VALID_PAINT_PROPS = new Set(["color"]);
+
+async function bindNodeVariable(params) {
+  const {
+    nodeId,
+    field,
+    variableId,
+    paintIndex = 0,
+    paintProperty = "color",
+  } = params || {};
+
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (!field) throw new Error("Missing field");
+  if (!variableId) throw new Error("Missing variableId");
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found: ${nodeId}`);
+
+  const variable = await figma.variables.getVariableByIdAsync(variableId);
+  if (!variable) throw new Error(`Variable not found: ${variableId}`);
+
+  if (field === "fills" || field === "strokes") {
+    if (!VALID_PAINT_PROPS.has(paintProperty)) {
+      throw new Error(`Invalid paintProperty: ${paintProperty} (allowed: color)`);
+    }
+    if (!(field in node)) {
+      throw new Error(`Node does not support ${field}: ${nodeId} (${node.type})`);
+    }
+    const paints = (node[field] || []).slice();
+    if (!paints[paintIndex]) {
+      throw new Error(`No paint at ${field}[${paintIndex}] (length: ${paints.length})`);
+    }
+    paints[paintIndex] = figma.variables.setBoundVariableForPaint(
+      paints[paintIndex],
+      paintProperty,
+      variable
+    );
+    node[field] = paints;
+  } else if (SIMPLE_BIND_FIELDS.has(field)) {
+    if (typeof node.setBoundVariable !== "function") {
+      throw new Error(`Node does not support setBoundVariable: ${nodeId} (${node.type})`);
+    }
+    node.setBoundVariable(field, variable);
+  } else {
+    throw new Error(`Unsupported field: ${field}. ` +
+      `Allowed: fills, strokes, or one of {${Array.from(SIMPLE_BIND_FIELDS).join(", ")}}`);
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    field,
+    variableId,
+    boundVariables: node.boundVariables,
+  };
+}
+
+async function unbindNodeVariable(params) {
+  const { nodeId, field, paintIndex = 0, paintProperty = "color" } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (!field) throw new Error("Missing field");
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found: ${nodeId}`);
+
+  if (field === "fills" || field === "strokes") {
+    const paints = (node[field] || []).slice();
+    if (!paints[paintIndex]) {
+      throw new Error(`No paint at ${field}[${paintIndex}]`);
+    }
+    paints[paintIndex] = figma.variables.setBoundVariableForPaint(
+      paints[paintIndex],
+      paintProperty,
+      null
+    );
+    node[field] = paints;
+  } else if (SIMPLE_BIND_FIELDS.has(field)) {
+    node.setBoundVariable(field, null);
+  } else {
+    throw new Error(`Unsupported field: ${field}`);
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    field,
+    boundVariables: node.boundVariables,
+  };
 }
 
 // ---- Trivial node-property helpers --------------------------------

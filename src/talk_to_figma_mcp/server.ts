@@ -1093,6 +1093,42 @@ variableTool(
   (_r: any) => `Removed mode`,
 );
 
+// ---- Design System: Variables (bind to node) ----------------------
+
+const BIND_FIELDS_DESC =
+  "fills | strokes (paint binding via paintIndex/paintProperty) " +
+  "OR one of: width, height, minWidth, minHeight, maxWidth, maxHeight, " +
+  "cornerRadius, topLeftRadius, topRightRadius, bottomLeftRadius, bottomRightRadius, " +
+  "paddingLeft, paddingRight, paddingTop, paddingBottom, " +
+  "itemSpacing, counterAxisSpacing, " +
+  "fontSize, lineHeight, letterSpacing, paragraphSpacing, paragraphIndent, " +
+  "characters, opacity, visible";
+
+variableTool(
+  "bind_node_variable",
+  "Bind a Variable to a node property. For fills/strokes the variable is attached to a paint at paintIndex (default 0); for everything else it's set on the node directly via setBoundVariable. The variable's resolvedType must match the field (COLOR for paint, FLOAT for sizes/spacing/font, BOOLEAN for visible, STRING for characters).",
+  {
+    nodeId: z.string().describe("Target node id"),
+    field: z.string().describe(BIND_FIELDS_DESC),
+    variableId: z.string().describe("Variable id to bind"),
+    paintIndex: z.number().int().nonnegative().optional().describe("Paint index for fills/strokes (default 0)"),
+    paintProperty: z.enum(["color"]).optional().describe("Paint property for fills/strokes (default 'color')"),
+  },
+  (r: any) => `Bound ${r.variableId} to ${r.name}.${r.field}`,
+);
+
+variableTool(
+  "unbind_node_variable",
+  "Remove a Variable binding from a node property. Same field set as bind_node_variable.",
+  {
+    nodeId: z.string().describe("Target node id"),
+    field: z.string().describe(BIND_FIELDS_DESC),
+    paintIndex: z.number().int().nonnegative().optional().describe("Paint index for fills/strokes (default 0)"),
+    paintProperty: z.enum(["color"]).optional().describe("Paint property for fills/strokes (default 'color')"),
+  },
+  (r: any) => `Unbound variable from ${r.name}.${r.field}`,
+);
+
 // -------------------------------------------------------------------
 
 // Set Stroke Color Tool
@@ -3098,6 +3134,8 @@ type FigmaCommand =
   | "add_variable_mode"
   | "rename_variable_mode"
   | "remove_variable_mode"
+  | "bind_node_variable"
+  | "unbind_node_variable"
   | "set_stroke_color"
   | "move_node"
   | "resize_node"
@@ -3235,6 +3273,19 @@ type CommandParams = {
   add_variable_mode: { collectionId: string; name: string };
   rename_variable_mode: { collectionId: string; modeId: string; name: string };
   remove_variable_mode: { collectionId: string; modeId: string };
+  bind_node_variable: {
+    nodeId: string;
+    field: string;
+    variableId: string;
+    paintIndex?: number;
+    paintProperty?: "color";
+  };
+  unbind_node_variable: {
+    nodeId: string;
+    field: string;
+    paintIndex?: number;
+    paintProperty?: "color";
+  };
   set_stroke_color: {
     nodeId: string;
     r: number;
