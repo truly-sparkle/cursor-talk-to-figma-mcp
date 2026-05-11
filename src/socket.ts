@@ -193,7 +193,19 @@ const server = Bun.serve({
           });
         }
       } catch (err) {
-        console.error("Error handling message:", err);
+        const reason = err instanceof Error ? err.message : String(err);
+        console.error("Error handling message:", reason);
+        // Reply to sender so they don't wait forever for a malformed message.
+        try {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: "error",
+              message: `Bad message: ${reason}`,
+            }));
+          }
+        } catch (sendErr) {
+          console.error("Failed to send error reply:", sendErr);
+        }
       }
     },
     close(ws: ServerWebSocket<any>) {
