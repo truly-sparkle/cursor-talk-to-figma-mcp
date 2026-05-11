@@ -3077,8 +3077,10 @@ async function scanNodesByTypes(params) {
     null
   );
 
-  // Recursively find nodes with specified types
-  await findNodesByTypes(node, types, matchingNodes);
+  // Recursively find nodes with specified types.
+  // visited Set guards against pathological trees that could cause re-entry
+  // (e.g. instance↔main swap, future API changes that expose cycles).
+  await findNodesByTypes(node, types, matchingNodes, new Set());
 
   // Send completion update
   sendProgressUpdate(
@@ -3106,10 +3108,16 @@ async function scanNodesByTypes(params) {
  * @param {SceneNode} node - The root node to start searching from
  * @param {Array<string>} types - Array of node types to find
  * @param {Array} matchingNodes - Array to store found nodes
+ * @param {Set<string>} visited - Visited node IDs (cycle guard)
  */
-async function findNodesByTypes(node, types, matchingNodes = []) {
+async function findNodesByTypes(node, types, matchingNodes = [], visited = new Set()) {
   // Skip invisible nodes
   if (node.visible === false) return;
+
+  // Cycle guard: if we've already walked this node id, stop.
+  // Prevents infinite recursion if any container ever exposes a back-edge.
+  if (node.id && visited.has(node.id)) return;
+  if (node.id) visited.add(node.id);
 
   // Check if this node is one of the specified types
   if (types.includes(node.type)) {
@@ -3131,7 +3139,7 @@ async function findNodesByTypes(node, types, matchingNodes = []) {
   // Recursively process children of container nodes
   if ("children" in node) {
     for (const child of node.children) {
-      await findNodesByTypes(child, types, matchingNodes);
+      await findNodesByTypes(child, types, matchingNodes, visited);
     }
   }
 }
