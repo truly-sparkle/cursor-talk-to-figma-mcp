@@ -73,7 +73,11 @@ const server = Bun.serve({
     open: handleConnection,
     message(ws: ServerWebSocket<any>, message: string | Buffer) {
       try {
-        const data = JSON.parse(message as string);
+        // Bun delivers either string or Buffer depending on the frame opcode.
+        // Coerce to string explicitly; rejecting binary outright would break
+        // browsers that send TextEncoder-encoded payloads.
+        const text = typeof message === "string" ? message : message.toString("utf8");
+        const data = JSON.parse(text);
         console.log(`\n=== Received message from client ===`);
         console.log(`Type: ${data.type}, Channel: ${data.channel || 'N/A'}`);
         if (data.message?.command) {
