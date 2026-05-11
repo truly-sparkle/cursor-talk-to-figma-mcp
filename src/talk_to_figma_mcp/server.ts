@@ -229,16 +229,24 @@ server.tool(
   }
 );
 
+// Clamp a Figma 0-1 channel into a valid 0-255 byte. Out-of-range / NaN
+// would otherwise produce broken hex (e.g. r=1.5 → 383 → "17f").
+function channelToByte(v: any): number {
+  const n = typeof v === "number" && Number.isFinite(v) ? v : 0;
+  return Math.round(Math.max(0, Math.min(1, n)) * 255);
+}
+
 function rgbaToHex(color: any): string {
   // skip if color is already hex
-  if (color.startsWith('#')) {
-    return color;
+  if (typeof color === "string") {
+    return color.startsWith("#") ? color : `#${color}`;
   }
 
-  const r = Math.round(color.r * 255);
-  const g = Math.round(color.g * 255);
-  const b = Math.round(color.b * 255);
-  const a = Math.round(color.a * 255);
+  const r = channelToByte(color?.r);
+  const g = channelToByte(color?.g);
+  const b = channelToByte(color?.b);
+  // Alpha defaults to 1 when missing — common in Figma SOLID paints.
+  const a = channelToByte(color?.a == null ? 1 : color.a);
 
   return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}${a === 255 ? '' : a.toString(16).padStart(2, '0')}`;
 }

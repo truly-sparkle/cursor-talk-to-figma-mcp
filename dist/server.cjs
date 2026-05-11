@@ -186,14 +186,18 @@ server.tool(
     }
   }
 );
+function channelToByte(v) {
+  const n = typeof v === "number" && Number.isFinite(v) ? v : 0;
+  return Math.round(Math.max(0, Math.min(1, n)) * 255);
+}
 function rgbaToHex(color) {
-  if (color.startsWith("#")) {
-    return color;
+  if (typeof color === "string") {
+    return color.startsWith("#") ? color : `#${color}`;
   }
-  const r = Math.round(color.r * 255);
-  const g = Math.round(color.g * 255);
-  const b = Math.round(color.b * 255);
-  const a = Math.round(color.a * 255);
+  const r = channelToByte(color?.r);
+  const g = channelToByte(color?.g);
+  const b = channelToByte(color?.b);
+  const a = channelToByte(color?.a == null ? 1 : color.a);
   return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}${a === 255 ? "" : a.toString(16).padStart(2, "0")}`;
 }
 function filterFigmaNode(node) {
