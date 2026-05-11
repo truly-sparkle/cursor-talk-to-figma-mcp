@@ -1325,6 +1325,42 @@ styleTool(
   (r: any) => `Deleted style "${r.name}" (${r.id})`,
 );
 
+// ---- Design System: Components (basics) ---------------------------
+
+styleTool(
+  "create_component_from_node",
+  "Convert an existing node into a Component (figma.createComponentFromNode). " +
+  "If the node is already a COMPONENT, returns it unchanged. The node's identity is preserved; " +
+  "any existing instances elsewhere are not affected.",
+  {
+    nodeId: z.string().describe("Node id to promote into a component"),
+  },
+  (r: any) => r.alreadyComponent
+    ? `Already a component: "${r.name}" (${r.id})`
+    : `Created component "${r.name}" (${r.id}, key: ${r.key})`,
+);
+
+styleTool(
+  "detach_instance",
+  "Detach an instance — turns it into a regular Frame, breaking the link to its main component. " +
+  "Existing overrides are baked in.",
+  {
+    nodeId: z.string().describe("Instance node id"),
+  },
+  (r: any) => `Detached "${r.name}" → ${r.type}`,
+);
+
+styleTool(
+  "swap_instance",
+  "Replace an instance's main component while preserving its position and overrides where compatible. " +
+  "Useful for switching variants by component id (also see set_component_property for variant props).",
+  {
+    nodeId: z.string().describe("Instance node id"),
+    mainComponentId: z.string().describe("New main component id"),
+  },
+  (r: any) => `Swapped "${r.name}" → main: "${r.mainComponent.name}" (${r.mainComponent.id})`,
+);
+
 // -------------------------------------------------------------------
 
 // Set Stroke Color Tool
@@ -3340,6 +3376,9 @@ type FigmaCommand =
   | "apply_style"
   | "rename_style"
   | "delete_style"
+  | "create_component_from_node"
+  | "detach_instance"
+  | "swap_instance"
   | "set_stroke_color"
   | "move_node"
   | "resize_node"
@@ -3530,6 +3569,9 @@ type CommandParams = {
   };
   rename_style: { styleId: string; name: string };
   delete_style: { styleId: string };
+  create_component_from_node: { nodeId: string };
+  detach_instance: { nodeId: string };
+  swap_instance: { nodeId: string; mainComponentId: string };
   set_stroke_color: {
     nodeId: string;
     r: number;

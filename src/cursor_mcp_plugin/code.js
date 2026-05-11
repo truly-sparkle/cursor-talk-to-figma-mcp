@@ -194,6 +194,12 @@ async function handleCommand(command, params) {
       return await renameStyle(params);
     case "delete_style":
       return await deleteStyle(params);
+    case "create_component_from_node":
+      return await createComponentFromNode(params);
+    case "detach_instance":
+      return await detachInstance(params);
+    case "swap_instance":
+      return await swapInstance(params);
     case "rename_node":
       return await renameNode(params);
     case "set_opacity":
@@ -1787,6 +1793,67 @@ async function deleteStyle(params) {
   const summary = summarizeStyle(style);
   style.remove();
   return { ...summary, removed: true };
+}
+
+// ---- Design System: Components (create / detach / swap) -----------
+
+async function createComponentFromNode(params) {
+  const { nodeId } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found: ${nodeId}`);
+
+  if (node.type === "COMPONENT") {
+    return { id: node.id, name: node.name, type: node.type, key: node.key, alreadyComponent: true };
+  }
+  if (typeof figma.createComponentFromNode !== "function") {
+    throw new Error("figma.createComponentFromNode is not available in this runtime");
+  }
+  const component = figma.createComponentFromNode(node);
+  return {
+    id: component.id,
+    name: component.name,
+    type: component.type,
+    key: component.key,
+  };
+}
+
+async function detachInstance(params) {
+  const { nodeId } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  const instance = await figma.getNodeByIdAsync(nodeId);
+  if (!instance) throw new Error(`Node not found: ${nodeId}`);
+  if (instance.type !== "INSTANCE") {
+    throw new Error(`Node is not an instance: ${nodeId} (${instance.type})`);
+  }
+  const frame = instance.detachInstance();
+  return { id: frame.id, name: frame.name, type: frame.type };
+}
+
+async function swapInstance(params) {
+  const { nodeId, mainComponentId } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (!mainComponentId) throw new Error("Missing mainComponentId");
+
+  const instance = await figma.getNodeByIdAsync(nodeId);
+  if (!instance) throw new Error(`Instance not found: ${nodeId}`);
+  if (instance.type !== "INSTANCE") {
+    throw new Error(`Node is not an instance: ${nodeId} (${instance.type})`);
+  }
+
+  const main = await figma.getNodeByIdAsync(mainComponentId);
+  if (!main) throw new Error(`Main component not found: ${mainComponentId}`);
+  if (main.type !== "COMPONENT") {
+    throw new Error(`Target is not a component: ${mainComponentId} (${main.type})`);
+  }
+
+  instance.swapComponent(main);
+
+  return {
+    id: instance.id,
+    name: instance.name,
+    mainComponent: { id: main.id, name: main.name },
+  };
 }
 
 async function unbindNodeVariable(params) {

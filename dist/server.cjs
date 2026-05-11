@@ -1102,6 +1102,31 @@ styleTool(
   },
   (r) => `Deleted style "${r.name}" (${r.id})`
 );
+styleTool(
+  "create_component_from_node",
+  "Convert an existing node into a Component (figma.createComponentFromNode). If the node is already a COMPONENT, returns it unchanged. The node's identity is preserved; any existing instances elsewhere are not affected.",
+  {
+    nodeId: import_zod.z.string().describe("Node id to promote into a component")
+  },
+  (r) => r.alreadyComponent ? `Already a component: "${r.name}" (${r.id})` : `Created component "${r.name}" (${r.id}, key: ${r.key})`
+);
+styleTool(
+  "detach_instance",
+  "Detach an instance \u2014 turns it into a regular Frame, breaking the link to its main component. Existing overrides are baked in.",
+  {
+    nodeId: import_zod.z.string().describe("Instance node id")
+  },
+  (r) => `Detached "${r.name}" \u2192 ${r.type}`
+);
+styleTool(
+  "swap_instance",
+  "Replace an instance's main component while preserving its position and overrides where compatible. Useful for switching variants by component id (also see set_component_property for variant props).",
+  {
+    nodeId: import_zod.z.string().describe("Instance node id"),
+    mainComponentId: import_zod.z.string().describe("New main component id")
+  },
+  (r) => `Swapped "${r.name}" \u2192 main: "${r.mainComponent.name}" (${r.mainComponent.id})`
+);
 server.tool(
   "set_stroke_color",
   "Set the stroke color of a node in Figma",
