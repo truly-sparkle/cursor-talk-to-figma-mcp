@@ -68,6 +68,33 @@ process.on("SIGTERM", () => {
   shutdown();
   process.exit(0);
 });
+function envInt(name, fallback) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+var TIMEOUTS = {
+  default: envInt("FIGMA_TIMEOUT_MS", 3e4),
+  long: envInt("FIGMA_LONG_TIMEOUT_MS", 3e5),
+  // 5 min
+  inactivity: envInt("FIGMA_INACTIVITY_TIMEOUT_MS", 12e4)
+  // 2 min after last progress
+};
+var LONG_RUNNING_COMMANDS = /* @__PURE__ */ new Set([
+  "scan_text_nodes",
+  "scan_nodes_by_types",
+  "set_multiple_text_contents",
+  "set_multiple_annotations",
+  "get_nodes_info",
+  "read_my_design",
+  "export_node_as_image",
+  "get_instance_overrides",
+  "set_instance_overrides"
+]);
+function defaultTimeoutFor(command) {
+  return LONG_RUNNING_COMMANDS.has(command) ? TIMEOUTS.long : TIMEOUTS.default;
+}
 var server = new import_mcp.McpServer({
   name: "TalkToFigmaMCP",
   version: "1.0.0"
@@ -2718,11 +2745,11 @@ function connectToFigma(port = 3055) {
           clearTimeout(request.timeout);
           request.timeout = setTimeout(() => {
             if (pendingRequests.has(requestId)) {
-              logger.error(`Request ${requestId} timed out after extended period of inactivity`);
+              logger.error(`Request ${requestId} timed out after ${TIMEOUTS.inactivity / 1e3}s of inactivity`);
               pendingRequests.delete(requestId);
-              request.reject(new Error("Request to Figma timed out"));
+              request.reject(new Error("Request to Figma timed out (no progress)"));
             }
-          }, 6e4);
+          }, TIMEOUTS.inactivity);
           logger.info(`Progress update for ${progressData.commandType}: ${progressData.progress}% - ${progressData.message}`);
           if (progressData.status === "completed" && progressData.progress === 100) {
             logger.info(`Operation ${progressData.commandType} completed, waiting for final result`);
@@ -2793,7 +2820,8 @@ async function joinChannel(channelName) {
     throw error;
   }
 }
-function sendCommandToFigma(command, params = {}, timeoutMs = 3e4) {
+function sendCommandToFigma(command, params = {}, timeoutMs) {
+  const effectiveTimeout = timeoutMs ?? defaultTimeoutFor(command);
   return new Promise((resolve, reject) => {
     if (!ws || ws.readyState !== import_ws.default.OPEN) {
       connectToFigma();
@@ -2823,10 +2851,10 @@ function sendCommandToFigma(command, params = {}, timeoutMs = 3e4) {
     const timeout = setTimeout(() => {
       if (pendingRequests.has(id)) {
         pendingRequests.delete(id);
-        logger.error(`Request ${id} to Figma timed out after ${timeoutMs / 1e3} seconds`);
-        reject(new Error("Request to Figma timed out"));
+        logger.error(`Request ${id} (${command}) to Figma timed out after ${effectiveTimeout / 1e3}s`);
+        reject(new Error(`Request to Figma timed out (${command}, ${effectiveTimeout / 1e3}s)`));
       }
-    }, timeoutMs);
+    }, effectiveTimeout);
     pendingRequests.set(id, {
       resolve,
       reject,

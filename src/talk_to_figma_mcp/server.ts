@@ -95,6 +95,50 @@ function shutdown() {
 process.on('SIGINT', () => { shutdown(); process.exit(0); });
 process.on('SIGTERM', () => { shutdown(); process.exit(0); });
 
+// ---- Per-command timeout policy (BL-007) -----------------------------
+//
+// Three numbers govern how long we wait for Figma to answer:
+//   - default: starting budget for ordinary, fast commands
+//   - long:    starting budget for known long-running commands (scans,
+//              multi-node ops, full-file exports)
+//   - inactivity: once Figma sends its first progress_update, we re-arm
+//              this timer; long ops can keep streaming progress and stay
+//              alive past `long` so long as they don't go silent.
+//
+// All three are overridable via env in case a particular plugin or file
+// needs more headroom.
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+const TIMEOUTS = {
+  default:    envInt("FIGMA_TIMEOUT_MS",            30_000),
+  long:       envInt("FIGMA_LONG_TIMEOUT_MS",       300_000),  // 5 min
+  inactivity: envInt("FIGMA_INACTIVITY_TIMEOUT_MS", 120_000),  // 2 min after last progress
+};
+
+// Commands that routinely run long (chunked scans, batch updates, full-file
+// reads, big exports). They start with `TIMEOUTS.long` instead of `default`.
+const LONG_RUNNING_COMMANDS: ReadonlySet<string> = new Set([
+  "scan_text_nodes",
+  "scan_nodes_by_types",
+  "set_multiple_text_contents",
+  "set_multiple_annotations",
+  "get_nodes_info",
+  "read_my_design",
+  "export_node_as_image",
+  "get_instance_overrides",
+  "set_instance_overrides",
+]);
+
+function defaultTimeoutFor(command: string): number {
+  return LONG_RUNNING_COMMANDS.has(command) ? TIMEOUTS.long : TIMEOUTS.default;
+}
+// ---------------------------------------------------------------------
+
 // Create MCP server
 const server = new McpServer({
   name: "TalkToFigmaMCP",
@@ -3500,14 +3544,16 @@ function connectToFigma(port: number = 3055) {
           // Reset the timeout to prevent timeouts during long-running operations
           clearTimeout(request.timeout);
 
-          // Create a new timeout
+          // Re-arm with the inactivity budget. As long as Figma keeps
+          // streaming progress_updates, the request stays alive past its
+          // initial timeout (BL-007).
           request.timeout = setTimeout(() => {
             if (pendingRequests.has(requestId)) {
-              logger.error(`Request ${requestId} timed out after extended period of inactivity`);
+              logger.error(`Request ${requestId} timed out after ${TIMEOUTS.inactivity / 1000}s of inactivity`);
               pendingRequests.delete(requestId);
-              request.reject(new Error('Request to Figma timed out'));
+              request.reject(new Error('Request to Figma timed out (no progress)'));
             }
-          }, 60000); // 60 second timeout for inactivity
+          }, TIMEOUTS.inactivity);
 
           // Log progress
           logger.info(`Progress update for ${progressData.commandType}: ${progressData.progress}% - ${progressData.message}`);
@@ -3614,8 +3660,10 @@ async function joinChannel(channelName: string): Promise<void> {
 function sendCommandToFigma(
   command: FigmaCommand,
   params: unknown = {},
-  timeoutMs: number = 30000
+  timeoutMs?: number
 ): Promise<unknown> {
+  // Per-command default; explicit timeoutMs argument overrides the policy.
+  const effectiveTimeout = timeoutMs ?? defaultTimeoutFor(command);
   return new Promise((resolve, reject) => {
     // If not connected, try to connect first
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -3652,10 +3700,10 @@ function sendCommandToFigma(
     const timeout = setTimeout(() => {
       if (pendingRequests.has(id)) {
         pendingRequests.delete(id);
-        logger.error(`Request ${id} to Figma timed out after ${timeoutMs / 1000} seconds`);
-        reject(new Error('Request to Figma timed out'));
+        logger.error(`Request ${id} (${command}) to Figma timed out after ${effectiveTimeout / 1000}s`);
+        reject(new Error(`Request to Figma timed out (${command}, ${effectiveTimeout / 1000}s)`));
       }
-    }, timeoutMs);
+    }, effectiveTimeout);
 
     // Store the promise callbacks to resolve/reject later
     pendingRequests.set(id, {
