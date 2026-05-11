@@ -29,8 +29,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.13.1",
-    "uuid": "latest",
-    "ws": "latest",
+    "uuid": "^11.1.0",
+    "ws": "^8.18.1",
     "zod": "3.22.4"
   }
 }

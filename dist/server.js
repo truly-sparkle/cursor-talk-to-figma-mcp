@@ -21,6 +21,31 @@ var logger = {
 var ws = null;
 var pendingRequests = /* @__PURE__ */ new Map();
 var currentChannel = null;
+var reconnectAttempts = 0;
+var MAX_RECONNECT_ATTEMPTS = 10;
+var RECONNECT_BASE_DELAY_MS = 2e3;
+var RECONNECT_MAX_DELAY_MS = 3e4;
+var reconnectTimer = null;
+var shuttingDown = false;
+function shutdown() {
+  shuttingDown = true;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (ws) {
+    ws.close();
+    ws = null;
+  }
+}
+process.on("SIGINT", () => {
+  shutdown();
+  process.exit(0);
+});
+process.on("SIGTERM", () => {
+  shutdown();
+  process.exit(0);
+});
 var server = new McpServer({
   name: "TalkToFigmaMCP",
   version: "1.0.0"
@@ -477,6 +502,268 @@ server.tool(
       };
     }
   }
+);
+server.tool(
+  "set_image_fill",
+  "Set an image fill on a node. Provide either imageHash (reuse an image already in this Figma file \u2014 typically obtained from another node's fills via get_node_info) or imageBytes (base64-encoded image). Useful for moving an image rectangle's content into a placeholder frame, or replacing a placeholder's fill with an image.",
+  {
+    nodeId: z.string().describe("The ID of the node whose fill to set"),
+    imageHash: z.string().optional().describe("Hash of an image already present in this Figma file"),
+    imageBytes: z.string().optional().describe("Base64-encoded image bytes (PNG/JPG/GIF/WEBP). Data-URL prefix accepted."),
+    scaleMode: z.enum(["FILL", "FIT", "CROP", "TILE"]).optional().describe("How the image is sized in the frame (default FILL)"),
+    opacity: z.number().min(0).max(1).optional().describe("Fill opacity 0-1 (default 1)"),
+    rotation: z.number().optional().describe("Image rotation in degrees (default 0; ignored for CROP)"),
+    replace: z.boolean().optional().describe("If true (default), replaces existing fills. If false, appends on top.")
+  },
+  async ({ nodeId, imageHash, imageBytes, scaleMode, opacity, rotation, replace }) => {
+    if (!imageHash && !imageBytes) {
+      return {
+        content: [{ type: "text", text: "Error: provide either imageHash or imageBytes" }]
+      };
+    }
+    try {
+      const result = await sendCommandToFigma("set_image_fill", {
+        nodeId,
+        imageHash,
+        imageBytes,
+        scaleMode,
+        opacity,
+        rotation,
+        replace
+      });
+      const typed = result;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Set image fill on "${typed.name}" \u2014 hash: ${typed.imageHash}, scaleMode: ${typed.scaleMode}`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting image fill: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "reparent_node",
+  "Move a node into a different parent (frame, group, page, etc.). Unlike move_node (which only changes coordinates), this changes parentage. Useful for placing an existing node inside a placeholder frame.",
+  {
+    nodeId: z.string().describe("The ID of the node to move"),
+    newParentId: z.string().describe("The ID of the target parent container"),
+    index: z.number().int().nonnegative().optional().describe("Insertion index among the parent's children (default: append at end)"),
+    preservePosition: z.boolean().optional().describe("If true (default), preserves the node's absolute on-canvas position by adjusting its local x/y after reparenting. Ignored when the new parent uses auto-layout.")
+  },
+  async ({ nodeId, newParentId, index, preservePosition }) => {
+    try {
+      const result = await sendCommandToFigma("reparent_node", {
+        nodeId,
+        newParentId,
+        index,
+        preservePosition
+      });
+      const typed = result;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Reparented "${typed.name}" into ${typed.parentId} at index ${typed.index}`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error reparenting node: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "set_effects",
+  "Replace (or append) the effect stack on a node: drop shadow, inner shadow, layer blur, background blur.",
+  {
+    nodeId: z.string().describe("The ID of the node"),
+    effects: z.array(z.object({
+      type: z.enum(["DROP_SHADOW", "INNER_SHADOW", "LAYER_BLUR", "BACKGROUND_BLUR"]),
+      color: z.object({
+        r: z.number().min(0).max(1),
+        g: z.number().min(0).max(1),
+        b: z.number().min(0).max(1),
+        a: z.number().min(0).max(1).optional()
+      }).optional().describe("Required for shadow types. Default a=0.25 if omitted."),
+      offset: z.object({ x: z.number(), y: z.number() }).optional().describe("Shadow offset; default {0,0}"),
+      radius: z.number().nonnegative().optional().describe("Blur radius / shadow blur; required for blurs"),
+      spread: z.number().optional().describe("Shadow spread; ignored for blurs"),
+      blendMode: z.string().optional().describe("Default NORMAL"),
+      visible: z.boolean().optional().describe("Default true")
+    })).describe("Effect stack (in render order)"),
+    append: z.boolean().optional().describe("If true, append to existing effects instead of replacing (default false)")
+  },
+  async ({ nodeId, effects, append }) => {
+    try {
+      const result = await sendCommandToFigma("set_effects", { nodeId, effects, append });
+      const typed = result;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Set ${typed.effects.length} effect(s) on "${typed.name}"`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting effects: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "set_text_style",
+  "Set font and paragraph properties on a text node. Complements set_text_content (which only changes the string). All fields are optional \u2014 only the provided ones are applied.",
+  {
+    nodeId: z.string().describe("The ID of the text node"),
+    fontFamily: z.string().optional().describe("e.g. 'Inter'"),
+    fontStyle: z.string().optional().describe("e.g. 'Regular', 'Bold', 'Medium Italic'"),
+    fontSize: z.number().positive().optional(),
+    letterSpacing: z.union([
+      z.number(),
+      z.object({ value: z.number(), unit: z.enum(["PIXELS", "PERCENT"]) })
+    ]).optional().describe("A bare number is treated as PIXELS"),
+    lineHeight: z.union([
+      z.number(),
+      z.literal("AUTO"),
+      z.object({ value: z.number(), unit: z.enum(["PIXELS", "PERCENT"]) })
+    ]).optional().describe("A bare number is treated as PIXELS; 'AUTO' for default"),
+    textCase: z.enum(["ORIGINAL", "UPPER", "LOWER", "TITLE", "SMALL_CAPS", "SMALL_CAPS_FORCED"]).optional(),
+    textDecoration: z.enum(["NONE", "UNDERLINE", "STRIKETHROUGH"]).optional(),
+    textAlignHorizontal: z.enum(["LEFT", "CENTER", "RIGHT", "JUSTIFIED"]).optional(),
+    textAlignVertical: z.enum(["TOP", "CENTER", "BOTTOM"]).optional(),
+    paragraphSpacing: z.number().nonnegative().optional(),
+    paragraphIndent: z.number().nonnegative().optional()
+  },
+  async (args2) => {
+    try {
+      const result = await sendCommandToFigma("set_text_style", args2);
+      const typed = result;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Updated text style on "${typed.name}" \u2014 font: ${JSON.stringify(typed.fontName)}, size: ${typed.fontSize}`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting text style: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+function nodePropTool(name, description, paramSchema, successText) {
+  server.tool(name, description, paramSchema, async (args2) => {
+    try {
+      const result = await sendCommandToFigma(name, args2);
+      return { content: [{ type: "text", text: successText(result) }] };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error in ${name}: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  });
+}
+nodePropTool(
+  "rename_node",
+  "Rename a node (sets node.name).",
+  {
+    nodeId: z.string().describe("The ID of the node"),
+    name: z.string().min(1).describe("New name (non-empty)")
+  },
+  (r) => `Renamed node ${r.id} to "${r.name}" (${r.type})`
+);
+nodePropTool(
+  "set_opacity",
+  "Set node opacity (0-1). Clamps out-of-range values.",
+  {
+    nodeId: z.string().describe("The ID of the node"),
+    opacity: z.number().min(0).max(1).describe("Opacity 0-1")
+  },
+  (r) => `Set opacity of "${r.name}" to ${r.opacity}`
+);
+nodePropTool(
+  "set_visible",
+  "Show or hide a node (sets node.visible).",
+  {
+    nodeId: z.string().describe("The ID of the node"),
+    visible: z.boolean().describe("true to show, false to hide")
+  },
+  (r) => `Set "${r.name}" visible: ${r.visible}`
+);
+nodePropTool(
+  "set_locked",
+  "Lock or unlock a node (sets node.locked).",
+  {
+    nodeId: z.string().describe("The ID of the node"),
+    locked: z.boolean().describe("true to lock, false to unlock")
+  },
+  (r) => `Set "${r.name}" locked: ${r.locked}`
+);
+nodePropTool(
+  "set_blend_mode",
+  "Set node blend mode. PASS_THROUGH only valid for groups/frames.",
+  {
+    nodeId: z.string().describe("The ID of the node"),
+    blendMode: z.enum([
+      "PASS_THROUGH",
+      "NORMAL",
+      "DARKEN",
+      "MULTIPLY",
+      "LINEAR_BURN",
+      "COLOR_BURN",
+      "LIGHTEN",
+      "SCREEN",
+      "LINEAR_DODGE",
+      "COLOR_DODGE",
+      "OVERLAY",
+      "SOFT_LIGHT",
+      "HARD_LIGHT",
+      "DIFFERENCE",
+      "EXCLUSION",
+      "HUE",
+      "SATURATION",
+      "COLOR",
+      "LUMINOSITY"
+    ]).describe("Blend mode")
+  },
+  (r) => `Set "${r.name}" blendMode: ${r.blendMode}`
 );
 server.tool(
   "set_stroke_color",
@@ -2214,7 +2501,17 @@ function connectToFigma(port = 3055) {
   ws = new WebSocket(wsUrl);
   ws.on("open", () => {
     logger.info("Connected to Figma socket server");
-    currentChannel = null;
+    reconnectAttempts = 0;
+    const channelToRejoin = currentChannel;
+    if (channelToRejoin) {
+      currentChannel = null;
+      sendCommandToFigma("join", { channel: channelToRejoin }).then(() => {
+        currentChannel = channelToRejoin;
+        logger.info(`Rejoined channel: ${channelToRejoin}`);
+      }).catch((err) => {
+        logger.error(`Failed to rejoin channel ${channelToRejoin}: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
   });
   ws.on("message", (data) => {
     try {
@@ -2273,8 +2570,21 @@ function connectToFigma(port = 3055) {
       request.reject(new Error("Connection closed"));
       pendingRequests.delete(id);
     }
-    logger.info("Attempting to reconnect in 2 seconds...");
-    setTimeout(() => connectToFigma(port), 2e3);
+    if (shuttingDown) return;
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      logger.error(`Giving up after ${MAX_RECONNECT_ATTEMPTS} reconnect attempts`);
+      return;
+    }
+    const delay = Math.min(
+      RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempts),
+      RECONNECT_MAX_DELAY_MS
+    );
+    reconnectAttempts++;
+    logger.info(`Reconnecting in ${delay / 1e3}s (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connectToFigma(port);
+    }, delay);
   });
 }
 async function joinChannel(channelName) {

@@ -150,6 +150,24 @@ async function handleCommand(command, params) {
       return await createText(params);
     case "set_fill_color":
       return await setFillColor(params);
+    case "set_image_fill":
+      return await setImageFill(params);
+    case "reparent_node":
+      return await reparentNode(params);
+    case "set_effects":
+      return await setEffects(params);
+    case "set_text_style":
+      return await setTextStyle(params);
+    case "rename_node":
+      return await renameNode(params);
+    case "set_opacity":
+      return await setOpacity(params);
+    case "set_visible":
+      return await setVisible(params);
+    case "set_locked":
+      return await setLocked(params);
+    case "set_blend_mode":
+      return await setBlendMode(params);
     case "set_stroke_color":
       return await setStrokeColor(params);
     case "move_node":
@@ -327,6 +345,36 @@ function rgbaToHex(color) {
   );
 }
 
+// Normalize a Paint (fill or stroke) for client-facing JSON.
+// JSON_REST_V1 export uses `imageRef` for image hashes; we expose it as
+// `imageHash` to match the Plugin API and the input key of set_image_fill.
+function processPaint(paint) {
+  var processed = Object.assign({}, paint);
+  delete processed.boundVariables;
+
+  if (processed.imageRef) {
+    processed.imageHash = processed.imageRef;
+    delete processed.imageRef;
+  }
+
+  if (processed.gradientStops) {
+    processed.gradientStops = processed.gradientStops.map((stop) => {
+      var processedStop = Object.assign({}, stop);
+      if (processedStop.color) {
+        processedStop.color = rgbaToHex(processedStop.color);
+      }
+      delete processedStop.boundVariables;
+      return processedStop;
+    });
+  }
+
+  if (processed.color) {
+    processed.color = rgbaToHex(processed.color);
+  }
+
+  return processed;
+}
+
 function filterFigmaNode(node) {
   if (node.type === "VECTOR") {
     return null;
@@ -340,39 +388,13 @@ function filterFigmaNode(node) {
 
   if (node.fills && node.fills.length > 0) {
     filtered.fills = node.fills.map((fill) => {
-      var processedFill = Object.assign({}, fill);
-      delete processedFill.boundVariables;
-      delete processedFill.imageRef;
-
-      if (processedFill.gradientStops) {
-        processedFill.gradientStops = processedFill.gradientStops.map(
-          (stop) => {
-            var processedStop = Object.assign({}, stop);
-            if (processedStop.color) {
-              processedStop.color = rgbaToHex(processedStop.color);
-            }
-            delete processedStop.boundVariables;
-            return processedStop;
-          }
-        );
-      }
-
-      if (processedFill.color) {
-        processedFill.color = rgbaToHex(processedFill.color);
-      }
-
-      return processedFill;
+      return processPaint(fill);
     });
   }
 
   if (node.strokes && node.strokes.length > 0) {
     filtered.strokes = node.strokes.map((stroke) => {
-      var processedStroke = Object.assign({}, stroke);
-      delete processedStroke.boundVariables;
-      if (processedStroke.color) {
-        processedStroke.color = rgbaToHex(processedStroke.color);
-      }
-      return processedStroke;
+      return processPaint(stroke);
     });
   }
 
@@ -973,6 +995,373 @@ async function setFillColor(params) {
     fills: [paintStyle],
   };
 }
+
+const VALID_SCALE_MODES = new Set(["FILL", "FIT", "CROP", "TILE"]);
+
+function decodeBase64ToBytes(b64) {
+  const clean = b64.replace(/^data:[^;]+;base64,/, "");
+  const binary = atob(clean);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function resolveImageHash({ imageHash, imageBytes }) {
+  if (imageHash) {
+    const existing = figma.getImageByHash(imageHash);
+    if (!existing) {
+      throw new Error(`No image found in this file for hash: ${imageHash}`);
+    }
+    return imageHash;
+  }
+  if (imageBytes) {
+    const bytes = decodeBase64ToBytes(imageBytes);
+    const created = figma.createImage(bytes);
+    return created.hash;
+  }
+  throw new Error("Provide either imageHash or imageBytes");
+}
+
+async function setImageFill(params) {
+  const {
+    nodeId,
+    imageHash,
+    imageBytes,
+    scaleMode = "FILL",
+    opacity = 1,
+    rotation = 0,
+    replace = true,
+  } = params || {};
+
+  if (!nodeId) throw new Error("Missing nodeId parameter");
+  if (!VALID_SCALE_MODES.has(scaleMode)) {
+    throw new Error(`Invalid scaleMode: ${scaleMode} (allowed: FILL, FIT, CROP, TILE)`);
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  if (!("fills" in node)) throw new Error(`Node does not support fills: ${nodeId}`);
+
+  const hash = await resolveImageHash({ imageHash, imageBytes });
+
+  const imagePaint = {
+    type: "IMAGE",
+    imageHash: hash,
+    scaleMode,
+    opacity: Math.min(1, Math.max(0, opacity)),
+    // rotation is only meaningful for non-CROP modes; Figma ignores it for CROP
+    rotation,
+  };
+
+  // node.fills is readonly (returns frozen array) — must assign a new array
+  const existing = replace ? [] : (Array.isArray(node.fills) ? node.fills.slice() : []);
+  node.fills = [...existing, imagePaint];
+
+  return {
+    id: node.id,
+    name: node.name,
+    imageHash: hash,
+    scaleMode,
+    fills: node.fills,
+  };
+}
+
+async function reparentNode(params) {
+  const { nodeId, newParentId, index, preservePosition = true } = params || {};
+
+  if (!nodeId) throw new Error("Missing nodeId parameter");
+  if (!newParentId) throw new Error("Missing newParentId parameter");
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  if (!("parent" in node) || node.removed) {
+    throw new Error(`Node cannot be reparented: ${nodeId}`);
+  }
+
+  const newParent = await figma.getNodeByIdAsync(newParentId);
+  if (!newParent) throw new Error(`Parent not found with ID: ${newParentId}`);
+  if (typeof newParent.appendChild !== "function") {
+    throw new Error(`Target is not a container: ${newParentId} (${newParent.type})`);
+  }
+
+  // Guard against reparenting a node into its own descendant
+  let walker = newParent;
+  while (walker) {
+    if (walker.id === node.id) {
+      throw new Error("Cannot reparent a node into itself or its descendant");
+    }
+    walker = walker.parent;
+  }
+
+  // Capture absolute position before move; Figma's child coords are parent-relative
+  const absBefore = preservePosition && "absoluteTransform" in node
+    ? { x: node.absoluteTransform[0][2], y: node.absoluteTransform[1][2] }
+    : null;
+
+  if (typeof index === "number") {
+    newParent.insertChild(index, node);
+  } else {
+    newParent.appendChild(node);
+  }
+
+  // Re-apply absolute position by converting through new parent's transform.
+  // Skips when new parent is auto-layout (it owns positioning) or when caller opted out.
+  const parentIsAutoLayout = "layoutMode" in newParent && newParent.layoutMode !== "NONE";
+  if (absBefore && !parentIsAutoLayout && "absoluteTransform" in newParent && "x" in node) {
+    const pt = newParent.absoluteTransform;
+    node.x = absBefore.x - pt[0][2];
+    node.y = absBefore.y - pt[1][2];
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    parentId: node.parent ? node.parent.id : null,
+    index: node.parent && "children" in node.parent
+      ? node.parent.children.indexOf(node)
+      : -1,
+  };
+}
+
+async function loadFontsForNode(node) {
+  // Mixed fontName across runs requires loading every distinct font in the text node
+  if (node.fontName === figma.mixed) {
+    const len = node.characters.length;
+    const seen = new Set();
+    for (let i = 0; i < len; i++) {
+      const f = node.getRangeFontName(i, i + 1);
+      const key = `${f.family}__${f.style}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        await figma.loadFontAsync(f);
+      }
+    }
+  } else {
+    await figma.loadFontAsync(node.fontName);
+  }
+}
+
+async function setTextStyle(params) {
+  const {
+    nodeId,
+    fontFamily,
+    fontStyle,
+    fontSize,
+    letterSpacing,
+    lineHeight,
+    textCase,
+    textDecoration,
+    textAlignHorizontal,
+    textAlignVertical,
+    paragraphSpacing,
+    paragraphIndent,
+  } = params || {};
+
+  if (!nodeId) throw new Error("Missing nodeId parameter");
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  if (node.type !== "TEXT") {
+    throw new Error(`Node is not a text node: ${nodeId} (${node.type})`);
+  }
+
+  await loadFontsForNode(node);
+
+  // If caller specifies a new font, load that one too before applying
+  if (fontFamily || fontStyle) {
+    const baseFont = node.fontName === figma.mixed
+      ? { family: "Inter", style: "Regular" }
+      : node.fontName;
+    const next = {
+      family: fontFamily || baseFont.family,
+      style: fontStyle || baseFont.style,
+    };
+    await figma.loadFontAsync(next);
+    node.fontName = next;
+  }
+
+  if (typeof fontSize === "number") node.fontSize = fontSize;
+  if (letterSpacing !== undefined) {
+    node.letterSpacing = typeof letterSpacing === "number"
+      ? { value: letterSpacing, unit: "PIXELS" }
+      : letterSpacing;
+  }
+  if (lineHeight !== undefined) {
+    if (lineHeight === "AUTO") node.lineHeight = { unit: "AUTO" };
+    else if (typeof lineHeight === "number") {
+      node.lineHeight = { value: lineHeight, unit: "PIXELS" };
+    } else {
+      node.lineHeight = lineHeight;
+    }
+  }
+  if (textCase) node.textCase = textCase;
+  if (textDecoration) node.textDecoration = textDecoration;
+  if (textAlignHorizontal) node.textAlignHorizontal = textAlignHorizontal;
+  if (textAlignVertical) node.textAlignVertical = textAlignVertical;
+  if (typeof paragraphSpacing === "number") node.paragraphSpacing = paragraphSpacing;
+  if (typeof paragraphIndent === "number") node.paragraphIndent = paragraphIndent;
+
+  return {
+    id: node.id,
+    name: node.name,
+    fontName: node.fontName,
+    fontSize: node.fontSize,
+    textAlignHorizontal: node.textAlignHorizontal,
+    textAlignVertical: node.textAlignVertical,
+    textCase: node.textCase,
+    textDecoration: node.textDecoration,
+  };
+}
+
+const VALID_EFFECT_TYPES = new Set([
+  "DROP_SHADOW",
+  "INNER_SHADOW",
+  "LAYER_BLUR",
+  "BACKGROUND_BLUR",
+]);
+
+function normalizeEffect(e) {
+  if (!e || !e.type) throw new Error("Effect missing 'type'");
+  if (!VALID_EFFECT_TYPES.has(e.type)) {
+    throw new Error(`Invalid effect type: ${e.type}`);
+  }
+  const visible = e.visible !== false;
+  if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
+    if (typeof e.radius !== "number") {
+      throw new Error(`${e.type} requires numeric 'radius'`);
+    }
+    return { type: e.type, radius: e.radius, visible };
+  }
+  // Shadows
+  const c = e.color || {};
+  // Use `== null` (matches null + undefined) since 0 is a valid color value
+  // and `??` is not supported by all Figma plugin runtimes.
+  const cr = c.r == null ? 0 : c.r;
+  const cg = c.g == null ? 0 : c.g;
+  const cb = c.b == null ? 0 : c.b;
+  const ca = c.a == null ? 0.25 : c.a;
+  return {
+    type: e.type,
+    color: {
+      r: Math.min(1, Math.max(0, cr)),
+      g: Math.min(1, Math.max(0, cg)),
+      b: Math.min(1, Math.max(0, cb)),
+      a: Math.min(1, Math.max(0, ca)),
+    },
+    offset: {
+      x: (e.offset && e.offset.x) || 0,
+      y: (e.offset && e.offset.y) || 0,
+    },
+    radius: typeof e.radius === "number" ? e.radius : 4,
+    spread: typeof e.spread === "number" ? e.spread : 0,
+    blendMode: e.blendMode || "NORMAL",
+    visible,
+  };
+}
+
+async function setEffects(params) {
+  const { nodeId, effects, append = false } = params || {};
+
+  if (!nodeId) throw new Error("Missing nodeId parameter");
+  if (!Array.isArray(effects)) throw new Error("'effects' must be an array");
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  if (!("effects" in node)) {
+    throw new Error(`Node does not support effects: ${nodeId} (${node.type})`);
+  }
+
+  const normalized = effects.map(normalizeEffect);
+  const existing = append && Array.isArray(node.effects) ? node.effects.slice() : [];
+  node.effects = [...existing, ...normalized];
+
+  return {
+    id: node.id,
+    name: node.name,
+    effects: node.effects,
+  };
+}
+
+// ---- Trivial node-property helpers --------------------------------
+
+async function getMutableNode(nodeId) {
+  if (!nodeId) throw new Error("Missing nodeId parameter");
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  if (node.removed) throw new Error(`Node was removed: ${nodeId}`);
+  return node;
+}
+
+async function renameNode(params) {
+  const { nodeId, name } = params || {};
+  if (typeof name !== "string" || name.length === 0) {
+    throw new Error("'name' must be a non-empty string");
+  }
+  const node = await getMutableNode(nodeId);
+  // Pages, sections, frames, and most node types support rename.
+  // DocumentNode is the only frequent exception worth surfacing clearly.
+  if (node.type === "DOCUMENT") throw new Error("Cannot rename the document root");
+  node.name = name;
+  return { id: node.id, name: node.name, type: node.type };
+}
+
+async function setOpacity(params) {
+  const { nodeId, opacity } = params || {};
+  if (typeof opacity !== "number") throw new Error("'opacity' must be a number 0-1");
+  const node = await getMutableNode(nodeId);
+  if (!("opacity" in node)) {
+    throw new Error(`Node does not support opacity: ${nodeId} (${node.type})`);
+  }
+  node.opacity = Math.min(1, Math.max(0, opacity));
+  return { id: node.id, name: node.name, opacity: node.opacity };
+}
+
+async function setVisible(params) {
+  const { nodeId, visible } = params || {};
+  if (typeof visible !== "boolean") throw new Error("'visible' must be a boolean");
+  const node = await getMutableNode(nodeId);
+  if (!("visible" in node)) {
+    throw new Error(`Node does not support visibility: ${nodeId} (${node.type})`);
+  }
+  node.visible = visible;
+  return { id: node.id, name: node.name, visible: node.visible };
+}
+
+async function setLocked(params) {
+  const { nodeId, locked } = params || {};
+  if (typeof locked !== "boolean") throw new Error("'locked' must be a boolean");
+  const node = await getMutableNode(nodeId);
+  if (!("locked" in node)) {
+    throw new Error(`Node does not support locking: ${nodeId} (${node.type})`);
+  }
+  node.locked = locked;
+  return { id: node.id, name: node.name, locked: node.locked };
+}
+
+const VALID_BLEND_MODES = new Set([
+  "PASS_THROUGH", "NORMAL",
+  "DARKEN", "MULTIPLY", "LINEAR_BURN", "COLOR_BURN",
+  "LIGHTEN", "SCREEN", "LINEAR_DODGE", "COLOR_DODGE",
+  "OVERLAY", "SOFT_LIGHT", "HARD_LIGHT",
+  "DIFFERENCE", "EXCLUSION",
+  "HUE", "SATURATION", "COLOR", "LUMINOSITY",
+]);
+
+async function setBlendMode(params) {
+  const { nodeId, blendMode } = params || {};
+  if (!blendMode || !VALID_BLEND_MODES.has(blendMode)) {
+    throw new Error(`Invalid blendMode: ${blendMode}`);
+  }
+  const node = await getMutableNode(nodeId);
+  if (!("blendMode" in node)) {
+    throw new Error(`Node does not support blendMode: ${nodeId} (${node.type})`);
+  }
+  // PASS_THROUGH is only valid for groups/frames; let Figma reject if unsupported
+  node.blendMode = blendMode;
+  return { id: node.id, name: node.name, blendMode: node.blendMode };
+}
+
+// -------------------------------------------------------------------
 
 async function setStrokeColor(params) {
   const {

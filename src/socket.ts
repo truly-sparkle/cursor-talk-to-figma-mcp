@@ -14,28 +14,25 @@ function handleConnection(ws: ServerWebSocket<any>) {
     type: "system",
     message: "Please join a channel to start chatting",
   }));
+}
 
-  ws.close = () => {
-    console.log("Client disconnected");
+function handleDisconnect(ws: ServerWebSocket<any>) {
+  console.log("Client disconnected");
 
-    // Remove client from their channel
-    channels.forEach((clients, channelName) => {
-      if (clients.has(ws)) {
-        clients.delete(ws);
+  channels.forEach((clients, channelName) => {
+    if (!clients.has(ws)) return;
+    clients.delete(ws);
 
-        // Notify other clients in same channel
-        clients.forEach((client) => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: "system",
-              message: "A user has left the channel",
-              channel: channelName
-            }));
-          }
-        });
+    clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({
+          type: "system",
+          message: "A user has left the channel",
+          channel: channelName
+        }));
       }
     });
-  };
+  });
 }
 
 const server = Bun.serve({
@@ -200,10 +197,7 @@ const server = Bun.serve({
       }
     },
     close(ws: ServerWebSocket<any>) {
-      // Remove client from their channel
-      channels.forEach((clients) => {
-        clients.delete(ws);
-      });
+      handleDisconnect(ws);
     }
   }
 });
