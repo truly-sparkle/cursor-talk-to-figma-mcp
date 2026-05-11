@@ -178,6 +178,8 @@ async function handleCommand(command, params) {
       return await bindNodeVariable(params);
     case "unbind_node_variable":
       return await unbindNodeVariable(params);
+    case "set_variable_alias":
+      return await setVariableAlias(params);
     case "rename_node":
       return await renameNode(params);
     case "set_opacity":
@@ -1549,6 +1551,36 @@ async function bindNodeVariable(params) {
     variableId,
     boundVariables: node.boundVariables,
   };
+}
+
+// Make a source variable's value (for one mode) be an alias to another variable.
+// Both variables must have the same resolvedType; this is how a "semantic"
+// token (e.g. color/text/primary) references a "primitive" (color/blue/600).
+async function setVariableAlias(params) {
+  const { variableId, modeId, targetVariableId } = params || {};
+  if (!variableId) throw new Error("Missing variableId");
+  if (!modeId) throw new Error("Missing modeId");
+  if (!targetVariableId) throw new Error("Missing targetVariableId");
+  if (variableId === targetVariableId) {
+    throw new Error("A variable cannot alias itself");
+  }
+
+  const source = await figma.variables.getVariableByIdAsync(variableId);
+  if (!source) throw new Error(`Source variable not found: ${variableId}`);
+
+  const target = await figma.variables.getVariableByIdAsync(targetVariableId);
+  if (!target) throw new Error(`Target variable not found: ${targetVariableId}`);
+
+  if (source.resolvedType !== target.resolvedType) {
+    throw new Error(
+      `Type mismatch: source is ${source.resolvedType}, target is ${target.resolvedType}`
+    );
+  }
+
+  const aliasValue = figma.variables.createVariableAlias(target);
+  source.setValueForMode(modeId, aliasValue);
+
+  return summarizeVariable(source);
 }
 
 async function unbindNodeVariable(params) {

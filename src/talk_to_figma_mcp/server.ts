@@ -1129,6 +1129,19 @@ variableTool(
   (r: any) => `Unbound variable from ${r.name}.${r.field}`,
 );
 
+variableTool(
+  "set_variable_alias",
+  "Make a variable's value (for one mode) reference another variable, instead of a literal value. " +
+  "This is the foundation of token hierarchies — e.g. a 'semantic' token like color/text/primary aliases " +
+  "a 'primitive' like color/blue/600. Both variables must have the same resolvedType.",
+  {
+    variableId: z.string().describe("Source variable id (the one that will hold the alias)"),
+    modeId: z.string().describe("Mode id of the source variable to set"),
+    targetVariableId: z.string().describe("Target variable id to point at"),
+  },
+  (r: any) => `Set "${r.name}" mode value → alias of ${r.id}`,
+);
+
 // -------------------------------------------------------------------
 
 // Set Stroke Color Tool
@@ -3136,6 +3149,7 @@ type FigmaCommand =
   | "remove_variable_mode"
   | "bind_node_variable"
   | "unbind_node_variable"
+  | "set_variable_alias"
   | "set_stroke_color"
   | "move_node"
   | "resize_node"
@@ -3285,6 +3299,11 @@ type CommandParams = {
     field: string;
     paintIndex?: number;
     paintProperty?: "color";
+  };
+  set_variable_alias: {
+    variableId: string;
+    modeId: string;
+    targetVariableId: string;
   };
   set_stroke_color: {
     nodeId: string;

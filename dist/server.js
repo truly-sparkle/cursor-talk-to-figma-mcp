@@ -926,6 +926,16 @@ variableTool(
   },
   (r) => `Unbound variable from ${r.name}.${r.field}`
 );
+variableTool(
+  "set_variable_alias",
+  "Make a variable's value (for one mode) reference another variable, instead of a literal value. This is the foundation of token hierarchies \u2014 e.g. a 'semantic' token like color/text/primary aliases a 'primitive' like color/blue/600. Both variables must have the same resolvedType.",
+  {
+    variableId: z.string().describe("Source variable id (the one that will hold the alias)"),
+    modeId: z.string().describe("Mode id of the source variable to set"),
+    targetVariableId: z.string().describe("Target variable id to point at")
+  },
+  (r) => `Set "${r.name}" mode value \u2192 alias of ${r.id}`
+);
 server.tool(
   "set_stroke_color",
   "Set the stroke color of a node in Figma",
