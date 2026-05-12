@@ -199,6 +199,15 @@ To develop, update your mcp config to direct to your local directory.
 }
 ```
 
+Note that `dist/` is **not** tracked in git — `bun` runs `src/` directly,
+and `npm publish` (`bun run pub:release`) builds `dist/` just before
+publishing. After cloning a fork:
+
+```bash
+bun install
+bun run build   # only needed if your mcp.json points at dist/server.js
+```
+
 ## MCP Tools
 
 The MCP server provides the following tools for interacting with Figma:
