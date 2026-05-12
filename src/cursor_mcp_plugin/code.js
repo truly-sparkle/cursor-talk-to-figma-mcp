@@ -1793,7 +1793,8 @@ async function deleteStyle(params) {
   if (!style) throw new Error(`Style not found: ${styleId}`);
   const summary = summarizeStyle(style);
   style.remove();
-  return { ...summary, removed: true };
+  // Figma plugin runtime doesn't support ES2018 object-spread → use Object.assign.
+  return Object.assign({}, summary, { removed: true });
 }
 
 // ---- Design System: Components (create / detach / swap) -----------
