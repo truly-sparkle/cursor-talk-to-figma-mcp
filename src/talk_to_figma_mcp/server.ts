@@ -991,7 +991,17 @@ variableTool(
     collectionId: z.string().describe("Target collection id"),
     name: z.string().min(1).describe("Variable name, e.g. 'color/brand/500' (slashes create groups)"),
     type: z.enum(["BOOLEAN", "FLOAT", "STRING", "COLOR"]).describe("Variable type"),
-    value: z.any().optional().describe("Optional initial value for the default mode"),
+    value: z.union([
+      z.boolean(),
+      z.number(),
+      z.string(),
+      z.object({
+        r: z.number().min(0).max(1),
+        g: z.number().min(0).max(1),
+        b: z.number().min(0).max(1),
+        a: z.number().min(0).max(1).optional(),
+      }),
+    ]).optional().describe("Optional initial value for the default mode (type matches `type`)"),
   },
   (r: any) => `Created variable "${r.name}" (${r.resolvedType}, id: ${r.id})`,
 );
@@ -1002,7 +1012,17 @@ variableTool(
   {
     variableId: z.string().describe("Variable id"),
     modeId: z.string().describe("Mode id (from the parent collection's modes)"),
-    value: z.any().describe("Value matching the variable's type"),
+    value: z.union([
+      z.boolean(),
+      z.number(),
+      z.string(),
+      z.object({
+        r: z.number().min(0).max(1),
+        g: z.number().min(0).max(1),
+        b: z.number().min(0).max(1),
+        a: z.number().min(0).max(1).optional(),
+      }),
+    ]).describe("Value matching the variable's resolvedType"),
   },
   (r: any) => `Set value of "${r.name}" for mode`,
 );
@@ -1287,7 +1307,8 @@ styleTool(
     componentSetId: z.string().describe("Target COMPONENT_SET or COMPONENT id"),
     name: z.string().min(1),
     type: z.enum(["BOOLEAN", "TEXT", "INSTANCE_SWAP", "VARIANT"]),
-    defaultValue: z.any(),
+    defaultValue: z.union([z.boolean(), z.string(), z.number()])
+      .describe("Default value: BOOLEAN→true/false, TEXT→string, INSTANCE_SWAP→component id (string), VARIANT→variant option (string)"),
     options: z.record(z.any()).optional(),
   },
   (r: any) => `Added property "${r.name}" (${r.type}, propertyId: ${r.propertyId})`,
