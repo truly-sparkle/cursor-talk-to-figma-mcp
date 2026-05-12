@@ -107,6 +107,36 @@ bun socket
 4. Connect the plugin to the WebSocket server by joining a channel using `join_channel`
 5. Use Cursor to communicate with Figma using the MCP tools
 
+## Security Model
+
+This project is designed for **local-only** use. Defaults assume the
+relay, the MCP server, and Figma are all running on the same machine.
+
+**What we protect against:**
+- Channel name validation (`^[a-zA-Z0-9_-]{1,64}$`) — prevents arbitrary
+  channel-stuffing and log noise.
+- Message-format validation in the relay — bad JSON or wrong types reply
+  with `{type:"error"}` instead of being silently dropped.
+- Optional shared-secret token (`FIGMA_RELAY_TOKEN`) for the relay — see
+  next section. Constant-time comparison to avoid timing leaks.
+
+**What we do NOT protect against by default:**
+- **Local processes on the same machine** can connect to the relay and
+  join any channel. If you don't trust other code on your machine, set
+  `FIGMA_RELAY_TOKEN`.
+- **Network-exposed relays** (binding to `0.0.0.0`, port-forwarding, WSL
+  bridges) are not protected unless you set `FIGMA_RELAY_TOKEN`. Without
+  the token, anyone who can reach the port can drive your Figma plugin.
+- **TLS** — the relay speaks plain `ws://`, not `wss://`. Suitable for
+  loopback only. For remote use, terminate TLS at a reverse proxy.
+- **No file content scrubbing** — what the MCP tools read out of Figma
+  (node trees, text, fills, etc.) is sent to the LLM client as-is.
+  Don't run this against design files containing secrets you wouldn't
+  show the model.
+
+If you're going to expose the relay beyond `localhost`, set the token
+**before** binding to a public interface.
+
 ## Optional: Relay Authentication
 
 By default the WebSocket relay (`bun socket`) accepts joins from anyone on
