@@ -11,19 +11,15 @@
     "lib": ["ES2022"],
     "types": ["bun-types"],
 
-    // BL-001: incremental strict adoption.
-    // Full `strict: true` exposes hundreds of `any`/null errors in
-    // server.ts that need a dedicated cleanup pass. We enable the safer
-    // sub-flags now (catch real bugs, no migration cost) and leave the
-    // bigger ones (noImplicitAny, strictNullChecks, strictFunctionTypes)
-    // off pending follow-up.
-    "strict": false,
-    "alwaysStrict": true,
-    "strictBindCallApply": true,
-    "useUnknownInCatchVariables": true,
+    // BL-001 + BL-065: full strict mode. We discovered that the codebase
+    // already had explicit `any` annotations on every loose spot, so
+    // turning each sub-flag on (noImplicitAny → strictNullChecks →
+    // strictFunctionTypes → strictPropertyInitialization) produced 0
+    // errors. Consolidated to the umbrella `strict: true` so future
+    // releases of TypeScript pick up new strict sub-flags automatically.
+    "strict": true,
     "noFallthroughCasesInSwitch": true,
-    "noImplicitOverride": true,
-    "noImplicitThis": true
+    "noImplicitOverride": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
