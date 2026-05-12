@@ -107,6 +107,18 @@ bun socket
 4. Connect the plugin to the WebSocket server by joining a channel using `join_channel`
 5. Use Cursor to communicate with Figma using the MCP tools
 
+### Changing the relay port
+
+The default port is `3055`. If you change it, **three places must agree**:
+
+1. `bun socket` — set `PORT` env (`PORT=4000 bun socket`).
+2. The MCP server — pass `--port=4000` (it reuses the port for the WS URL).
+3. **`src/cursor_mcp_plugin/manifest.json`** — `networkAccess.allowedDomains`
+   has a hard-coded `ws://localhost:3055` (and the same in
+   `devAllowedDomains`). Edit both to match the new port, then re-import the
+   plugin in Figma. The Figma plugin manifest can't read env at load time,
+   so this entry must be edited per environment.
+
 ## Security Model
 
 This project is designed for **local-only** use. Defaults assume the
