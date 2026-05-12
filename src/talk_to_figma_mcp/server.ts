@@ -1277,6 +1277,146 @@ wrapToolHandler(
   (r: any) => `Set constraints on "${r.name}": ${JSON.stringify(r.constraints)}`,
 );
 
+// ---- Gradient & image paints (BL-009, BL-010) ---------------------
+
+const gradientArgs = {
+  nodeId: z.string(),
+  gradientType: z.enum(["GRADIENT_LINEAR", "GRADIENT_RADIAL", "GRADIENT_ANGULAR", "GRADIENT_DIAMOND"]),
+  gradientStops: z.array(z.object({
+    position: z.number().min(0).max(1),
+    color: z.object({
+      r: z.number().min(0).max(1),
+      g: z.number().min(0).max(1),
+      b: z.number().min(0).max(1),
+      a: z.number().min(0).max(1).optional(),
+    }),
+  })).min(2),
+  gradientTransform: z.array(z.array(z.number())).optional()
+    .describe("2x3 affine transform [[a,b,tx],[c,d,ty]]; default identity (left→right linear)"),
+  opacity: z.number().min(0).max(1).optional(),
+  visible: z.boolean().optional(),
+  replace: z.boolean().optional().describe("Default true. false to append to existing paints"),
+};
+
+wrapToolHandler(
+  "set_gradient_fill",
+  "Set a gradient fill (LINEAR/RADIAL/ANGULAR/DIAMOND). Stops in 0..1 with RGBA colors. " +
+  "gradientTransform 2x3 controls direction/scale (identity = horizontal). " +
+  "replace=true (default) replaces fills array; false appends.",
+  gradientArgs,
+  (r: any) => `Set gradient fill on "${r.name}" (${r.paint.gradientStops.length} stops)`,
+);
+
+wrapToolHandler(
+  "set_gradient_stroke",
+  "Set a gradient stroke. Same args as set_gradient_fill but for strokes[].",
+  gradientArgs,
+  (r: any) => `Set gradient stroke on "${r.name}" (${r.paint.gradientStops.length} stops)`,
+);
+
+wrapToolHandler(
+  "set_image_stroke",
+  "Set an image stroke. Provide imageHash OR imageBytes (base64). Same shape as set_image_fill.",
+  {
+    nodeId: z.string(),
+    imageHash: z.string().optional(),
+    imageBytes: z.string().optional(),
+    scaleMode: z.enum(["FILL", "FIT", "CROP", "TILE"]).optional(),
+    opacity: z.number().min(0).max(1).optional(),
+    rotation: z.number().optional(),
+    visible: z.boolean().optional(),
+    replace: z.boolean().optional(),
+  },
+  (r: any) => `Set image stroke on "${r.name}" (hash: ${r.paint.imageHash})`,
+);
+
+// ---- Stroke properties full set (BL-013) --------------------------
+
+wrapToolHandler(
+  "set_stroke_weight",
+  "Set stroke weight (uniform). For per-side weights see set_individual_stroke_weights.",
+  { nodeId: z.string(), weight: z.number().min(0) },
+  (r: any) => `Set strokeWeight on "${r.name}" to ${r.strokeWeight}`,
+);
+
+wrapToolHandler(
+  "set_stroke_align",
+  "Set stroke alignment: CENTER | INSIDE | OUTSIDE.",
+  { nodeId: z.string(), align: z.enum(["CENTER", "INSIDE", "OUTSIDE"]) },
+  (r: any) => `Set strokeAlign on "${r.name}" to ${r.strokeAlign}`,
+);
+
+wrapToolHandler(
+  "set_stroke_cap",
+  "Set stroke endpoint cap: NONE | ROUND | SQUARE | ARROW_LINES | ARROW_EQUILATERAL.",
+  { nodeId: z.string(), cap: z.enum(["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL"]) },
+  (r: any) => `Set strokeCap on "${r.name}" to ${r.strokeCap}`,
+);
+
+wrapToolHandler(
+  "set_stroke_join",
+  "Set stroke corner join: MITER | BEVEL | ROUND.",
+  { nodeId: z.string(), join: z.enum(["MITER", "BEVEL", "ROUND"]) },
+  (r: any) => `Set strokeJoin on "${r.name}" to ${r.strokeJoin}`,
+);
+
+wrapToolHandler(
+  "set_dash_pattern",
+  "Set stroke dash pattern: array of dash/gap lengths. Empty array = solid.",
+  { nodeId: z.string(), pattern: z.array(z.number().min(0)) },
+  (r: any) => `Set dashPattern on "${r.name}" to [${r.dashPattern.join(", ")}]`,
+);
+
+wrapToolHandler(
+  "set_individual_stroke_weights",
+  "Set per-side stroke weights (RECTANGLE/FRAME). Provide one or more of top/right/bottom/left.",
+  {
+    nodeId: z.string(),
+    top: z.number().min(0).optional(),
+    right: z.number().min(0).optional(),
+    bottom: z.number().min(0).optional(),
+    left: z.number().min(0).optional(),
+  },
+  (r: any) => `Set individual stroke weights on "${r.name}": T=${r.strokeTopWeight} R=${r.strokeRightWeight} B=${r.strokeBottomWeight} L=${r.strokeLeftWeight}`,
+);
+
+// ---- Z-order / grouping (BL-017) ----------------------------------
+
+wrapToolHandler(
+  "reorder_node",
+  "Move a node to a specific z-index within its current parent.",
+  { nodeId: z.string(), index: z.number().int().nonnegative() },
+  (r: any) => `Reordered "${r.name}" to index ${r.index}`,
+);
+
+wrapToolHandler(
+  "group_nodes",
+  "Group nodes into a GroupNode (figma.group). All nodes should share the same parent. parentId optional (defaults to first node's parent or current page).",
+  { nodeIds: z.array(z.string()).min(1), parentId: z.string().optional(), name: z.string().optional() },
+  (r: any) => `Created group "${r.id}" (${r.childCount} children)`,
+);
+
+wrapToolHandler(
+  "ungroup_node",
+  "Ungroup a GroupNode — children become siblings of the group's parent. Returns the freed children.",
+  { nodeId: z.string() },
+  (r: any) => `Ungrouped ${r.ungroupedFrom} → ${r.children.length} children`,
+);
+
+wrapToolHandler(
+  "bring_to_front",
+  "Move a node to the front (last child of its parent — topmost z-order).",
+  { nodeId: z.string() },
+  (r: any) => `Brought ${r.id} to front (index ${r.index})`,
+);
+
+wrapToolHandler(
+  "send_to_back",
+  "Move a node to the back (first child — bottom of z-order).",
+  { nodeId: z.string() },
+  (r: any) => `Sent ${r.id} to back`,
+);
+
 // ---- Text advanced (BL-023) ---------------------------------------
 
 wrapToolHandler(
@@ -4155,6 +4295,20 @@ type FigmaCommand =
   | "set_text_auto_resize"
   | "set_text_truncation"
   | "set_list_options"
+  | "set_gradient_fill"
+  | "set_image_stroke"
+  | "set_gradient_stroke"
+  | "set_stroke_weight"
+  | "set_stroke_align"
+  | "set_stroke_cap"
+  | "set_stroke_join"
+  | "set_dash_pattern"
+  | "set_individual_stroke_weights"
+  | "reorder_node"
+  | "group_nodes"
+  | "ungroup_node"
+  | "bring_to_front"
+  | "send_to_back"
   | "get_reactions"
   | "set_default_connector"
   | "create_connections"

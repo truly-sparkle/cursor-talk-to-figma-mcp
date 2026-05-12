@@ -455,6 +455,34 @@ async function handleCommand(command, params) {
       return await setTextTruncation(params);
     case "set_list_options":
       return await setListOptions(params);
+    case "set_gradient_fill":
+      return await setGradientFill(params);
+    case "set_image_stroke":
+      return await setImageStroke(params);
+    case "set_gradient_stroke":
+      return await setGradientStroke(params);
+    case "set_stroke_weight":
+      return await setStrokeWeight(params);
+    case "set_stroke_align":
+      return await setStrokeAlign(params);
+    case "set_stroke_cap":
+      return await setStrokeCap(params);
+    case "set_stroke_join":
+      return await setStrokeJoin(params);
+    case "set_dash_pattern":
+      return await setDashPattern(params);
+    case "set_individual_stroke_weights":
+      return await setIndividualStrokeWeights(params);
+    case "reorder_node":
+      return await reorderNode(params);
+    case "group_nodes":
+      return await groupNodes(params);
+    case "ungroup_node":
+      return await ungroupNode(params);
+    case "bring_to_front":
+      return await bringToFront(params);
+    case "send_to_back":
+      return await sendToBack(params);
     case "get_reactions":
       if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
         throw new Error("Missing or invalid nodeIds parameter");
@@ -6913,4 +6941,278 @@ async function setListOptions(params) {
     node.setRangeIndentation(p.start, p.end, p.indentLevel);
   }
   return { id: node.id, start: p.start, end: p.end, listType: p.listType, indentLevel: p.indentLevel };
+}
+
+// ---- Gradient & image paints (BL-009, BL-010) ---------------------
+
+const GRADIENT_TYPES = new Set([
+  "GRADIENT_LINEAR", "GRADIENT_RADIAL", "GRADIENT_ANGULAR", "GRADIENT_DIAMOND",
+]);
+
+function buildGradientPaint(p) {
+  if (!GRADIENT_TYPES.has(p.gradientType)) {
+    throw new Error("Invalid gradientType: " + p.gradientType);
+  }
+  if (!Array.isArray(p.gradientStops) || p.gradientStops.length < 2) {
+    throw new Error("gradientStops must be an array with at least 2 stops");
+  }
+  const stops = [];
+  for (let i = 0; i < p.gradientStops.length; i++) {
+    const s = p.gradientStops[i];
+    if (typeof s.position !== "number" || s.position < 0 || s.position > 1) {
+      throw new Error("Stop[" + i + "].position must be 0..1");
+    }
+    if (!s.color || typeof s.color !== "object") {
+      throw new Error("Stop[" + i + "].color is required");
+    }
+    const c = s.color;
+    stops.push({
+      position: s.position,
+      color: {
+        r: Math.max(0, Math.min(1, Number(c.r) || 0)),
+        g: Math.max(0, Math.min(1, Number(c.g) || 0)),
+        b: Math.max(0, Math.min(1, Number(c.b) || 0)),
+        a: c.a == null ? 1 : Math.max(0, Math.min(1, Number(c.a))),
+      },
+    });
+  }
+  // Default transform = identity for LINEAR (left→right). Caller can override.
+  const transform = p.gradientTransform || [[1, 0, 0], [0, 1, 0]];
+  return {
+    type: p.gradientType,
+    gradientStops: stops,
+    gradientTransform: transform,
+    opacity: p.opacity == null ? 1 : Math.max(0, Math.min(1, p.opacity)),
+    visible: p.visible !== false,
+  };
+}
+
+async function applyPaintTo(target, paintArrayKey, paint, replace) {
+  const node = await figma.getNodeByIdAsync(target.nodeId);
+  if (!node) throw new Error("Node not found: " + target.nodeId);
+  if (!(paintArrayKey in node)) {
+    throw new Error("Node does not support " + paintArrayKey + ": " + node.type);
+  }
+  const existing = replace === false && Array.isArray(node[paintArrayKey])
+    ? node[paintArrayKey].slice()
+    : [];
+  node[paintArrayKey] = existing.concat([paint]);
+  return { id: node.id, name: node.name, paint: paint, paints: node[paintArrayKey] };
+}
+
+async function setGradientFill(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  const paint = buildGradientPaint(p);
+  return await applyPaintTo({ nodeId: p.nodeId }, "fills", paint, p.replace !== false);
+}
+
+async function setGradientStroke(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  const paint = buildGradientPaint(p);
+  return await applyPaintTo({ nodeId: p.nodeId }, "strokes", paint, p.replace !== false);
+}
+
+async function setImageStroke(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  // Reuse the imageHash/imageBytes resolver from set_image_fill (BL-044).
+  const hash = await resolveImageHash({ imageHash: p.imageHash, imageBytes: p.imageBytes });
+  const scale = p.scaleMode || "FILL";
+  if (!VALID_SCALE_MODES.has(scale)) {
+    throw new Error("Invalid scaleMode: " + scale);
+  }
+  const paint = {
+    type: "IMAGE",
+    imageHash: hash,
+    scaleMode: scale,
+    opacity: p.opacity == null ? 1 : Math.max(0, Math.min(1, p.opacity)),
+    rotation: typeof p.rotation === "number" ? p.rotation : 0,
+    visible: p.visible !== false,
+  };
+  return await applyPaintTo({ nodeId: p.nodeId }, "strokes", paint, p.replace !== false);
+}
+
+// ---- Stroke properties full set (BL-013) --------------------------
+
+const STROKE_ALIGN_VALUES = new Set(["CENTER", "INSIDE", "OUTSIDE"]);
+const STROKE_CAP_VALUES = new Set(["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL"]);
+const STROKE_JOIN_VALUES = new Set(["MITER", "BEVEL", "ROUND"]);
+
+async function setStrokeWeight(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  if (typeof p.weight !== "number" || p.weight < 0) {
+    throw new Error("weight must be a non-negative number");
+  }
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found");
+  if (!("strokeWeight" in node)) throw new Error("Node does not support strokes: " + node.type);
+  node.strokeWeight = p.weight;
+  return { id: node.id, name: node.name, strokeWeight: node.strokeWeight };
+}
+
+async function setStrokeAlign(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  if (!STROKE_ALIGN_VALUES.has(p.align)) throw new Error("align must be CENTER | INSIDE | OUTSIDE");
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found");
+  if (!("strokeAlign" in node)) throw new Error("Node does not support strokeAlign: " + node.type);
+  node.strokeAlign = p.align;
+  return { id: node.id, name: node.name, strokeAlign: node.strokeAlign };
+}
+
+async function setStrokeCap(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  if (!STROKE_CAP_VALUES.has(p.cap)) throw new Error("Invalid cap: " + p.cap);
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found");
+  if (!("strokeCap" in node)) throw new Error("Node does not support strokeCap: " + node.type);
+  node.strokeCap = p.cap;
+  return { id: node.id, name: node.name, strokeCap: node.strokeCap };
+}
+
+async function setStrokeJoin(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  if (!STROKE_JOIN_VALUES.has(p.join)) throw new Error("Invalid join: " + p.join);
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found");
+  if (!("strokeJoin" in node)) throw new Error("Node does not support strokeJoin: " + node.type);
+  node.strokeJoin = p.join;
+  return { id: node.id, name: node.name, strokeJoin: node.strokeJoin };
+}
+
+async function setDashPattern(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  if (!Array.isArray(p.pattern)) throw new Error("pattern must be an array of numbers");
+  for (let i = 0; i < p.pattern.length; i++) {
+    if (typeof p.pattern[i] !== "number" || p.pattern[i] < 0) {
+      throw new Error("pattern[" + i + "] must be a non-negative number");
+    }
+  }
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found");
+  if (!("dashPattern" in node)) throw new Error("Node does not support dashPattern: " + node.type);
+  node.dashPattern = p.pattern;
+  return { id: node.id, name: node.name, dashPattern: node.dashPattern };
+}
+
+async function setIndividualStrokeWeights(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  const sides = ["top", "right", "bottom", "left"];
+  let any = false;
+  for (let i = 0; i < sides.length; i++) {
+    if (p[sides[i]] !== undefined) {
+      any = true;
+      if (typeof p[sides[i]] !== "number" || p[sides[i]] < 0) {
+        throw new Error(sides[i] + " must be a non-negative number");
+      }
+    }
+  }
+  if (!any) throw new Error("Provide at least one of top/right/bottom/left");
+
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found");
+  // Setter signature: node.strokeTopWeight = n, etc.
+  if (p.top !== undefined) node.strokeTopWeight = p.top;
+  if (p.right !== undefined) node.strokeRightWeight = p.right;
+  if (p.bottom !== undefined) node.strokeBottomWeight = p.bottom;
+  if (p.left !== undefined) node.strokeLeftWeight = p.left;
+  return {
+    id: node.id, name: node.name,
+    strokeTopWeight: node.strokeTopWeight,
+    strokeRightWeight: node.strokeRightWeight,
+    strokeBottomWeight: node.strokeBottomWeight,
+    strokeLeftWeight: node.strokeLeftWeight,
+  };
+}
+
+// ---- Z-order / grouping (BL-017) ----------------------------------
+
+async function reorderNode(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  if (typeof p.index !== "number" || p.index < 0) {
+    throw new Error("index must be a non-negative integer");
+  }
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found");
+  if (!node.parent) throw new Error("Node has no parent (page or removed)");
+  if (typeof node.parent.insertChild !== "function") {
+    throw new Error("Parent does not support reordering");
+  }
+  const total = node.parent.children.length;
+  const idx = Math.max(0, Math.min(p.index, total - 1));
+  node.parent.insertChild(idx, node);
+  return {
+    id: node.id, name: node.name,
+    parentId: node.parent.id,
+    index: node.parent.children.indexOf(node),
+  };
+}
+
+async function groupNodes(params) {
+  const p = params || {};
+  if (!Array.isArray(p.nodeIds) || p.nodeIds.length === 0) {
+    throw new Error("nodeIds must be a non-empty array");
+  }
+  const nodes = [];
+  for (let i = 0; i < p.nodeIds.length; i++) {
+    const n = await figma.getNodeByIdAsync(p.nodeIds[i]);
+    if (!n) throw new Error("Node not found: " + p.nodeIds[i]);
+    nodes.push(n);
+  }
+  let parent = null;
+  if (p.parentId) {
+    parent = await figma.getNodeByIdAsync(p.parentId);
+    if (!parent) throw new Error("Parent not found: " + p.parentId);
+  } else {
+    parent = nodes[0].parent || figma.currentPage;
+  }
+  const group = figma.group(nodes, parent);
+  if (p.name) group.name = p.name;
+  return { id: group.id, name: group.name, type: group.type, childCount: group.children.length };
+}
+
+async function ungroupNode(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found");
+  if (node.type !== "GROUP") {
+    throw new Error("Not a GROUP: " + node.type);
+  }
+  const children = figma.ungroup(node);
+  return {
+    ungroupedFrom: p.nodeId,
+    children: children.map(function (c) {
+      return { id: c.id, name: c.name, type: c.type };
+    }),
+  };
+}
+
+async function bringToFront(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found");
+  if (!node.parent) throw new Error("Node has no parent");
+  node.parent.appendChild(node); // appendChild moves to end (front)
+  return { id: node.id, parentId: node.parent.id, index: node.parent.children.indexOf(node) };
+}
+
+async function sendToBack(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found");
+  if (!node.parent) throw new Error("Node has no parent");
+  node.parent.insertChild(0, node);
+  return { id: node.id, parentId: node.parent.id, index: 0 };
 }
