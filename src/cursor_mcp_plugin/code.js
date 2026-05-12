@@ -238,6 +238,10 @@ async function handleCommand(command, params) {
       return await addFill(params);
     case "remove_fill_at":
       return await removeFillAt(params);
+    case "set_image_filters":
+      return await setImageFilters(params);
+    case "get_image_bytes_by_hash":
+      return await getImageBytesByHash(params);
     case "create_component_from_node":
       return await createComponentFromNode(params);
     case "detach_instance":
@@ -1857,6 +1861,74 @@ async function deleteStyle(params) {
 }
 
 // ---- Design System: Components (create / detach / swap) -----------
+
+// ---- Image follow-ups (BL-024) ------------------------------------
+
+const IMAGE_FILTER_KEYS = [
+  "exposure", "contrast", "saturation",
+  "temperature", "tint", "highlights", "shadows",
+];
+
+function clampFilter(v) {
+  var n = typeof v === "number" && isFinite(v) ? v : 0;
+  return Math.max(-1, Math.min(1, n));
+}
+
+async function setImageFilters(params) {
+  const { nodeId, filters, paintIndex = 0, target = "fills" } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (!filters || typeof filters !== "object") {
+    throw new Error("Missing filters object");
+  }
+  if (target !== "fills" && target !== "strokes") {
+    throw new Error("target must be 'fills' or 'strokes'");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!(target in node)) {
+    throw new Error("Node does not support " + target + ": " + node.type);
+  }
+
+  const paints = Array.isArray(node[target]) ? node[target].slice() : [];
+  const paint = paints[paintIndex];
+  if (!paint) throw new Error("No paint at " + target + "[" + paintIndex + "]");
+  if (paint.type !== "IMAGE") {
+    throw new Error("Paint at index " + paintIndex + " is not an IMAGE (type: " + paint.type + ")");
+  }
+
+  const nextFilters = Object.assign({}, paint.filters || {});
+  for (let i = 0; i < IMAGE_FILTER_KEYS.length; i++) {
+    const key = IMAGE_FILTER_KEYS[i];
+    if (filters[key] !== undefined) nextFilters[key] = clampFilter(filters[key]);
+  }
+  paints[paintIndex] = Object.assign({}, paint, { filters: nextFilters });
+  node[target] = paints;
+
+  return {
+    id: node.id,
+    name: node.name,
+    paintIndex: paintIndex,
+    target: target,
+    filters: nextFilters,
+  };
+}
+
+async function getImageBytesByHash(params) {
+  const { imageHash } = params || {};
+  if (!imageHash) throw new Error("Missing imageHash");
+  const image = figma.getImageByHash(imageHash);
+  if (!image) throw new Error("No image found for hash: " + imageHash);
+  const bytes = await image.getBytesAsync();
+  // base64-encode for transport over the WebSocket relay (text JSON only)
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return {
+    imageHash: imageHash,
+    byteLength: bytes.length,
+    base64: btoa(binary),
+  };
+}
 
 // ---- Paint stack helpers (BL-015) ---------------------------------
 

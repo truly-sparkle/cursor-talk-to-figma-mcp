@@ -934,6 +934,37 @@ wrapToolHandler(
 );
 
 wrapToolHandler(
+  "set_image_filters",
+  "Adjust an IMAGE paint's filters: exposure, contrast, saturation, temperature, tint, highlights, shadows. " +
+  "Each value is -1..1 (clamped). Only specified keys change; others are preserved.",
+  {
+    nodeId: z.string(),
+    filters: z.object({
+      exposure: z.number().min(-1).max(1).optional(),
+      contrast: z.number().min(-1).max(1).optional(),
+      saturation: z.number().min(-1).max(1).optional(),
+      temperature: z.number().min(-1).max(1).optional(),
+      tint: z.number().min(-1).max(1).optional(),
+      highlights: z.number().min(-1).max(1).optional(),
+      shadows: z.number().min(-1).max(1).optional(),
+    }),
+    paintIndex: z.number().int().nonnegative().optional().describe("Paint index in fills/strokes (default 0)"),
+    target: z.enum(["fills", "strokes"]).optional().describe("Default 'fills'"),
+  },
+  (r: any) => `Set image filters on "${r.name}" ${r.target}[${r.paintIndex}]`,
+);
+
+wrapToolHandler(
+  "get_image_bytes_by_hash",
+  "Read an image's raw bytes from a Figma file by its imageHash, returned as base64. " +
+  "Useful for re-uploading an image to another node, exporting outside Figma, or hash-based deduplication checks.",
+  {
+    imageHash: z.string(),
+  },
+  (r: any) => `Got ${r.byteLength} bytes for image ${r.imageHash}`,
+);
+
+wrapToolHandler(
   "set_constraints",
   "Set constraint behavior on a non-auto-layout child. " +
   "horizontal/vertical each accept: MIN | MAX | CENTER | STRETCH | SCALE. " +
@@ -3372,6 +3403,8 @@ type FigmaCommand =
   | "set_constraints"
   | "add_fill"
   | "remove_fill_at"
+  | "set_image_filters"
+  | "get_image_bytes_by_hash"
   | "create_component_from_node"
   | "detach_instance"
   | "swap_instance"
@@ -3575,6 +3608,16 @@ type CommandParams = {
   };
   add_fill: { nodeId: string; paint: any; index?: number };
   remove_fill_at: { nodeId: string; index: number };
+  set_image_filters: {
+    nodeId: string;
+    filters: Partial<{
+      exposure: number; contrast: number; saturation: number;
+      temperature: number; tint: number; highlights: number; shadows: number;
+    }>;
+    paintIndex?: number;
+    target?: "fills" | "strokes";
+  };
+  get_image_bytes_by_hash: { imageHash: string };
   create_component_from_node: { nodeId: string };
   detach_instance: { nodeId: string };
   swap_instance: { nodeId: string; mainComponentId: string };
