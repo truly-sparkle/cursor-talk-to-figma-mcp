@@ -361,11 +361,21 @@ async function getSelection() {
   };
 }
 
+// Clamp a Figma 0-1 channel into a valid 0-255 byte. Out-of-range / NaN
+// values would otherwise produce broken hex (e.g. r=1.5 → 383 → "17f").
+// Mirror of server.ts:channelToByte (BL-006). Plugin runtime — keep
+// hand-written, no helpers from server side.
+function channelToByte(v) {
+  var n = typeof v === "number" && isFinite(v) ? v : 0;
+  return Math.round(Math.max(0, Math.min(1, n)) * 255);
+}
+
 function rgbaToHex(color) {
-  var r = Math.round(color.r * 255);
-  var g = Math.round(color.g * 255);
-  var b = Math.round(color.b * 255);
-  var a = color.a !== undefined ? Math.round(color.a * 255) : 255;
+  if (!color || typeof color !== "object") return "#000000";
+  var r = channelToByte(color.r);
+  var g = channelToByte(color.g);
+  var b = channelToByte(color.b);
+  var a = color.a == null ? 255 : channelToByte(color.a);
 
   if (a === 255) {
     return (
