@@ -445,6 +445,16 @@ async function handleCommand(command, params) {
       return await createEmptyComponent(params);
     case "combine_as_variants":
       return await combineAsVariantsTool(params);
+    case "set_text_range_style":
+      return await setTextRangeStyle(params);
+    case "set_hyperlink":
+      return await setHyperlink(params);
+    case "set_text_auto_resize":
+      return await setTextAutoResize(params);
+    case "set_text_truncation":
+      return await setTextTruncation(params);
+    case "set_list_options":
+      return await setListOptions(params);
     case "get_reactions":
       if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
         throw new Error("Missing or invalid nodeIds parameter");
@@ -6768,4 +6778,139 @@ async function combineAsVariantsTool(params) {
   const set = figma.combineAsVariants(components, parent);
   if (p.name && typeof p.name === "string") set.name = p.name;
   return { id: set.id, name: set.name, type: set.type, variantCount: components.length };
+}
+
+// ---- Text advanced (BL-023) ---------------------------------------
+
+async function getTextNodeOrThrow(nodeId) {
+  if (!nodeId) throw new Error("Missing nodeId");
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (node.type !== "TEXT") throw new Error("Not a text node: " + node.type);
+  return node;
+}
+
+function checkRange(node, start, end) {
+  const len = node.characters.length;
+  if (typeof start !== "number" || typeof end !== "number") {
+    throw new Error("start and end must be numeric");
+  }
+  if (start < 0 || end > len || start >= end) {
+    throw new Error("Bad range [" + start + ", " + end + "); text length=" + len);
+  }
+}
+
+async function loadFontsForRange(node, start, end) {
+  const fonts = node.getRangeAllFontNames(start, end);
+  for (let i = 0; i < fonts.length; i++) {
+    await figma.loadFontAsync(fonts[i]);
+  }
+}
+
+async function setTextRangeStyle(params) {
+  const p = params || {};
+  const node = await getTextNodeOrThrow(p.nodeId);
+  checkRange(node, p.start, p.end);
+  const style = p.style || {};
+
+  await loadFontsForRange(node, p.start, p.end);
+
+  // Font change requires the new font loaded too.
+  if (style.fontFamily || style.fontStyle) {
+    const baseRange = node.getRangeFontName(p.start, p.start + 1);
+    const family = style.fontFamily || baseRange.family;
+    const fstyle = style.fontStyle || baseRange.style;
+    const next = { family: family, style: fstyle };
+    await figma.loadFontAsync(next);
+    node.setRangeFontName(p.start, p.end, next);
+  }
+
+  if (typeof style.fontSize === "number") {
+    node.setRangeFontSize(p.start, p.end, style.fontSize);
+  }
+  if (style.letterSpacing !== undefined) {
+    const v = typeof style.letterSpacing === "number"
+      ? { value: style.letterSpacing, unit: "PIXELS" }
+      : style.letterSpacing;
+    node.setRangeLetterSpacing(p.start, p.end, v);
+  }
+  if (style.lineHeight !== undefined) {
+    let v;
+    if (style.lineHeight === "AUTO") v = { unit: "AUTO" };
+    else if (typeof style.lineHeight === "number") v = { value: style.lineHeight, unit: "PIXELS" };
+    else v = style.lineHeight;
+    node.setRangeLineHeight(p.start, p.end, v);
+  }
+  if (style.textCase) node.setRangeTextCase(p.start, p.end, style.textCase);
+  if (style.textDecoration) node.setRangeTextDecoration(p.start, p.end, style.textDecoration);
+  if (Array.isArray(style.fills)) node.setRangeFills(p.start, p.end, style.fills);
+
+  return {
+    id: node.id,
+    name: node.name,
+    start: p.start,
+    end: p.end,
+    applied: Object.keys(style),
+  };
+}
+
+async function setHyperlink(params) {
+  const p = params || {};
+  const node = await getTextNodeOrThrow(p.nodeId);
+  checkRange(node, p.start, p.end);
+  await loadFontsForRange(node, p.start, p.end);
+  if (p.href === null || p.href === undefined) {
+    node.setRangeHyperlink(p.start, p.end, null);
+    return { id: node.id, start: p.start, end: p.end, cleared: true };
+  }
+  if (typeof p.href !== "string" || p.href.length === 0) {
+    throw new Error("href must be a non-empty string or null to clear");
+  }
+  node.setRangeHyperlink(p.start, p.end, { type: "URL", value: p.href });
+  return { id: node.id, start: p.start, end: p.end, href: p.href };
+}
+
+const TEXT_AUTO_RESIZE_VALUES = new Set(["WIDTH_AND_HEIGHT", "HEIGHT", "NONE", "TRUNCATE"]);
+
+async function setTextAutoResize(params) {
+  const p = params || {};
+  const node = await getTextNodeOrThrow(p.nodeId);
+  if (!TEXT_AUTO_RESIZE_VALUES.has(p.mode)) {
+    throw new Error("mode must be one of: WIDTH_AND_HEIGHT | HEIGHT | NONE | TRUNCATE");
+  }
+  await figma.loadFontAsync(node.fontName === figma.mixed ? { family: "Inter", style: "Regular" } : node.fontName);
+  node.textAutoResize = p.mode;
+  return { id: node.id, name: node.name, textAutoResize: node.textAutoResize };
+}
+
+async function setTextTruncation(params) {
+  const p = params || {};
+  const node = await getTextNodeOrThrow(p.nodeId);
+  if (p.truncation !== "DISABLED" && p.truncation !== "ENDING") {
+    throw new Error("truncation must be 'DISABLED' or 'ENDING'");
+  }
+  node.textTruncation = p.truncation;
+  if (typeof p.maxLines === "number") {
+    if (p.maxLines < 1) throw new Error("maxLines must be >= 1");
+    node.maxLines = p.maxLines;
+  }
+  return { id: node.id, name: node.name, textTruncation: node.textTruncation, maxLines: node.maxLines };
+}
+
+const LIST_TYPES = new Set(["ORDERED", "UNORDERED", "NONE"]);
+
+async function setListOptions(params) {
+  const p = params || {};
+  const node = await getTextNodeOrThrow(p.nodeId);
+  checkRange(node, p.start, p.end);
+  if (!LIST_TYPES.has(p.listType)) {
+    throw new Error("listType must be 'ORDERED' | 'UNORDERED' | 'NONE'");
+  }
+  await loadFontsForRange(node, p.start, p.end);
+  node.setRangeListOptions(p.start, p.end, { type: p.listType });
+  if (typeof p.indentLevel === "number") {
+    if (p.indentLevel < 0) throw new Error("indentLevel must be >= 0");
+    node.setRangeIndentation(p.start, p.end, p.indentLevel);
+  }
+  return { id: node.id, start: p.start, end: p.end, listType: p.listType, indentLevel: p.indentLevel };
 }

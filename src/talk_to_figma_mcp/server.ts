@@ -1277,6 +1277,84 @@ wrapToolHandler(
   (r: any) => `Set constraints on "${r.name}": ${JSON.stringify(r.constraints)}`,
 );
 
+// ---- Text advanced (BL-023) ---------------------------------------
+
+wrapToolHandler(
+  "set_text_range_style",
+  "Apply font/size/spacing/case/decoration/fills to a substring of a text node. " +
+  "style is a partial; only specified keys are applied. Range is [start, end). " +
+  "Fonts in the range are auto-loaded.",
+  {
+    nodeId: z.string(),
+    start: z.number().int().nonnegative(),
+    end: z.number().int().positive(),
+    style: z.object({
+      fontFamily: z.string().optional(),
+      fontStyle: z.string().optional(),
+      fontSize: z.number().positive().optional(),
+      letterSpacing: z.union([
+        z.number(),
+        z.object({ value: z.number(), unit: z.enum(["PIXELS", "PERCENT"]) }),
+      ]).optional(),
+      lineHeight: z.union([
+        z.number(),
+        z.literal("AUTO"),
+        z.object({ value: z.number(), unit: z.enum(["PIXELS", "PERCENT"]) }),
+      ]).optional(),
+      textCase: z.enum(["ORIGINAL", "UPPER", "LOWER", "TITLE", "SMALL_CAPS", "SMALL_CAPS_FORCED"]).optional(),
+      textDecoration: z.enum(["NONE", "UNDERLINE", "STRIKETHROUGH"]).optional(),
+      fills: z.array(z.any()).optional(),
+    }),
+  },
+  (r: any) => `Applied style on ${r.id} [${r.start}, ${r.end}): ${r.applied.join(", ")}`,
+);
+
+wrapToolHandler(
+  "set_hyperlink",
+  "Set or clear a URL hyperlink on a text range. Pass href=null to clear.",
+  {
+    nodeId: z.string(),
+    start: z.number().int().nonnegative(),
+    end: z.number().int().positive(),
+    href: z.string().nullable(),
+  },
+  (r: any) => r.cleared ? `Cleared hyperlink on [${r.start}, ${r.end})` : `Set hyperlink on [${r.start}, ${r.end}) → ${r.href}`,
+);
+
+wrapToolHandler(
+  "set_text_auto_resize",
+  "Set text node's auto-resize behavior: WIDTH_AND_HEIGHT (grow both) | HEIGHT (fixed width, grow height) | NONE (fixed) | TRUNCATE.",
+  {
+    nodeId: z.string(),
+    mode: z.enum(["WIDTH_AND_HEIGHT", "HEIGHT", "NONE", "TRUNCATE"]),
+  },
+  (r: any) => `Set textAutoResize on "${r.name}" to ${r.textAutoResize}`,
+);
+
+wrapToolHandler(
+  "set_text_truncation",
+  "Set text truncation: 'DISABLED' or 'ENDING' (with optional maxLines).",
+  {
+    nodeId: z.string(),
+    truncation: z.enum(["DISABLED", "ENDING"]),
+    maxLines: z.number().int().min(1).optional(),
+  },
+  (r: any) => `Set textTruncation on "${r.name}": ${r.textTruncation}${r.maxLines ? ` (maxLines=${r.maxLines})` : ""}`,
+);
+
+wrapToolHandler(
+  "set_list_options",
+  "Apply list formatting (bullet/numbered) to a text range. Optional indentLevel adjusts nesting.",
+  {
+    nodeId: z.string(),
+    start: z.number().int().nonnegative(),
+    end: z.number().int().positive(),
+    listType: z.enum(["ORDERED", "UNORDERED", "NONE"]),
+    indentLevel: z.number().int().min(0).optional(),
+  },
+  (r: any) => `Set list ${r.listType} on [${r.start}, ${r.end})${r.indentLevel != null ? ` indent=${r.indentLevel}` : ""}`,
+);
+
 // ---- Node creation expansion (BL-011) -----------------------------
 
 const placement = {
@@ -4072,6 +4150,11 @@ type FigmaCommand =
   | "create_section"
   | "create_component"
   | "combine_as_variants"
+  | "set_text_range_style"
+  | "set_hyperlink"
+  | "set_text_auto_resize"
+  | "set_text_truncation"
+  | "set_list_options"
   | "get_reactions"
   | "set_default_connector"
   | "create_connections"
