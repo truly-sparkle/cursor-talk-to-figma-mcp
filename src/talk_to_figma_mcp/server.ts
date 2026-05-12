@@ -933,6 +933,58 @@ wrapToolHandler(
   (r: any) => `Removed fill[${r.removed?.type ?? "?"}] from "${r.name}" (${r.fills.length} remaining)`,
 );
 
+// ---- Plugin Data / metadata (BL-026) ------------------------------
+
+wrapToolHandler(
+  "set_plugin_data",
+  "Store private metadata on a node, scoped to this plugin (figma.setPluginData). " +
+  "Values must be strings — JSON.stringify objects first. Empty value deletes the key.",
+  {
+    nodeId: z.string(),
+    key: z.string().min(1),
+    value: z.string(),
+  },
+  (r: any) => r.deleted
+    ? `Deleted plugin data ${r.key} on ${r.id}`
+    : `Set plugin data ${r.key} on ${r.id} (${r.valueLength} chars)`,
+);
+
+wrapToolHandler(
+  "get_plugin_data",
+  "Read private plugin data from a node. Returns empty string if the key doesn't exist.",
+  {
+    nodeId: z.string(),
+    key: z.string().min(1),
+  },
+  (r: any) => `${r.key} = ${JSON.stringify(r.value)}`,
+);
+
+wrapToolHandler(
+  "set_shared_plugin_data",
+  "Store metadata visible to other plugins (figma.setSharedPluginData). Namespaced by `namespace`. " +
+  "Use this when multiple tools need to share data on the same node. Empty value deletes.",
+  {
+    nodeId: z.string(),
+    namespace: z.string().min(1).describe("Shared namespace (e.g. your plugin id or org)"),
+    key: z.string().min(1),
+    value: z.string(),
+  },
+  (r: any) => r.deleted
+    ? `Deleted shared data ${r.namespace}/${r.key} on ${r.id}`
+    : `Set shared data ${r.namespace}/${r.key} on ${r.id} (${r.valueLength} chars)`,
+);
+
+wrapToolHandler(
+  "get_shared_plugin_data",
+  "Read shared plugin data by namespace + key. Returns empty string if missing.",
+  {
+    nodeId: z.string(),
+    namespace: z.string().min(1),
+    key: z.string().min(1),
+  },
+  (r: any) => `${r.namespace}/${r.key} = ${JSON.stringify(r.value)}`,
+);
+
 wrapToolHandler(
   "get_viewport_bounds",
   "Read the current Figma viewport: center (canvas coords), zoom factor, and visible bounds rect.",
@@ -3463,6 +3515,10 @@ type FigmaCommand =
   | "set_viewport_zoom"
   | "set_viewport_center"
   | "scroll_and_zoom_into_view"
+  | "set_plugin_data"
+  | "get_plugin_data"
+  | "set_shared_plugin_data"
+  | "get_shared_plugin_data"
   | "create_component_from_node"
   | "detach_instance"
   | "swap_instance"
@@ -3680,6 +3736,10 @@ type CommandParams = {
   set_viewport_zoom: { zoom: number };
   set_viewport_center: { x: number; y: number };
   scroll_and_zoom_into_view: { nodeIds: string[] };
+  set_plugin_data: { nodeId: string; key: string; value: string };
+  get_plugin_data: { nodeId: string; key: string };
+  set_shared_plugin_data: { nodeId: string; namespace: string; key: string; value: string };
+  get_shared_plugin_data: { nodeId: string; namespace: string; key: string };
   create_component_from_node: { nodeId: string };
   detach_instance: { nodeId: string };
   swap_instance: { nodeId: string; mainComponentId: string };

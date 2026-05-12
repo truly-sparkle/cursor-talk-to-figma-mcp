@@ -250,6 +250,14 @@ async function handleCommand(command, params) {
       return await setViewportCenter(params);
     case "scroll_and_zoom_into_view":
       return await scrollAndZoomIntoView(params);
+    case "set_plugin_data":
+      return await setPluginData(params);
+    case "get_plugin_data":
+      return await getPluginData(params);
+    case "set_shared_plugin_data":
+      return await setSharedPluginData(params);
+    case "get_shared_plugin_data":
+      return await getSharedPluginData(params);
     case "create_component_from_node":
       return await createComponentFromNode(params);
     case "detach_instance":
@@ -1869,6 +1877,68 @@ async function deleteStyle(params) {
 }
 
 // ---- Design System: Components (create / detach / swap) -----------
+
+// ---- Plugin Data / metadata (BL-026) ------------------------------
+
+// Both plugin-data variants only accept strings. Callers wanting structured
+// data should JSON.stringify before storing. Empty string deletes the key
+// in Figma's API; we surface that as `deleted: true` for clarity.
+
+async function setPluginData(params) {
+  const { nodeId, key, value } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (!key) throw new Error("Missing key");
+  if (typeof value !== "string") throw new Error("value must be a string (JSON.stringify objects first)");
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (typeof node.setPluginData !== "function") {
+    throw new Error("Node does not support pluginData: " + node.type);
+  }
+  node.setPluginData(key, value);
+  return { id: node.id, key: key, valueLength: value.length, deleted: value === "" };
+}
+
+async function getPluginData(params) {
+  const { nodeId, key } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (!key) throw new Error("Missing key");
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (typeof node.getPluginData !== "function") {
+    throw new Error("Node does not support pluginData: " + node.type);
+  }
+  const value = node.getPluginData(key);
+  return { id: node.id, key: key, value: value };
+}
+
+async function setSharedPluginData(params) {
+  const { nodeId, namespace, key, value } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (!namespace) throw new Error("Missing namespace");
+  if (!key) throw new Error("Missing key");
+  if (typeof value !== "string") throw new Error("value must be a string");
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (typeof node.setSharedPluginData !== "function") {
+    throw new Error("Node does not support sharedPluginData: " + node.type);
+  }
+  node.setSharedPluginData(namespace, key, value);
+  return { id: node.id, namespace: namespace, key: key, valueLength: value.length, deleted: value === "" };
+}
+
+async function getSharedPluginData(params) {
+  const { nodeId, namespace, key } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (!namespace) throw new Error("Missing namespace");
+  if (!key) throw new Error("Missing key");
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (typeof node.getSharedPluginData !== "function") {
+    throw new Error("Node does not support sharedPluginData: " + node.type);
+  }
+  const value = node.getSharedPluginData(namespace, key);
+  return { id: node.id, namespace: namespace, key: key, value: value };
+}
 
 // ---- Viewport / camera (BL-033) -----------------------------------
 
