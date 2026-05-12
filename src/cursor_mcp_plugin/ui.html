@@ -373,9 +373,6 @@
             <li>Connect to the server using the port number (default: 3055)</li>
             <li>Once connected, you can interact with Figma through Cursor</li>
           </ol>
-          <p style="font-size: 11px; color: #888; margin-top: 16px;">
-            Anonymous usage analytics (plugin opens, command names, success/error) are sent to Google Analytics to help improve the plugin. No file content or personal data is collected.
-          </p>
         </div>
       </div>
     </div>
@@ -388,80 +385,7 @@
         serverPort: 3055,
         pendingRequests: new Map(),
         channel: null,
-        commandTracking: new Map(),
       };
-
-      // --- Anonymous analytics (GA4 Measurement Protocol) ---
-      const analytics = (() => {
-        const MEASUREMENT_ID = "G-9YH0ER9BXC";
-        const API_SECRET = "Xqiy0AtbQt-Xbx4bdoc8Kw";
-        // Set ?_dbg=1 on the parent URL or window.__ANALYTICS_DEBUG__ = true
-        // to route events through GA4 DebugView and log validation errors.
-        const DEBUG = window.__ANALYTICS_DEBUG__ === true;
-        const HOST = "https://www.google-analytics.com";
-        const PATH = DEBUG ? "/debug/mp/collect" : "/mp/collect";
-        const ENDPOINT =
-          HOST +
-          PATH +
-          "?measurement_id=" +
-          MEASUREMENT_ID +
-          "&api_secret=" +
-          API_SECRET;
-        const sessionId = Date.now().toString();
-        const sessionStart = Date.now();
-        let clientId = null;
-        const queue = [];
-
-        function send(name, params) {
-          const eventParams = Object.assign(
-            {
-              session_id: sessionId,
-              engagement_time_msec: Math.max(100, Date.now() - sessionStart),
-            },
-            params || {}
-          );
-          if (DEBUG) eventParams.debug_mode = 1;
-          const body = {
-            client_id: clientId,
-            events: [{ name, params: eventParams }],
-          };
-          try {
-            const req = fetch(ENDPOINT, {
-              method: "POST",
-              body: JSON.stringify(body),
-              keepalive: true,
-            });
-            if (DEBUG) {
-              req
-                .then((r) => r.json())
-                .then((j) => console.log("[analytics debug]", name, j))
-                .catch((e) => console.warn("[analytics debug] error", e));
-            } else {
-              req.catch(() => {});
-            }
-          } catch (e) {
-            // analytics must never break the plugin
-          }
-        }
-
-        return {
-          track(event, params) {
-            if (!clientId) {
-              queue.push([event, params]);
-              return;
-            }
-            send(event, params);
-          },
-          setClientId(id) {
-            clientId = id;
-            while (queue.length) {
-              const [e, p] = queue.shift();
-              send(e, p);
-            }
-          },
-        };
-      })();
-      analytics.track("plugin_open");
 
       // UI Elements
       const portInput = document.getElementById("port");
@@ -556,10 +480,6 @@
                     true,
                     `Connected to server in channel: <strong>${channelName}</strong>`
                   );
-                  analytics.track("channel_join", {
-                    port: state.serverPort,
-                    channel: channelName,
-                  });
 
                   // Notify the plugin code
                   parent.postMessage(
@@ -637,10 +557,6 @@
         if (data.command) {
           try {
             state.activeRequestId = data.id;
-            state.commandTracking.set(data.id, {
-              command: data.command,
-              startedAt: Date.now(),
-            });
 
             // Send the command to the plugin code
             parent.postMessage(
@@ -662,21 +578,6 @@
             );
           }
         }
-      }
-
-      function trackCommandResult(id, success, errorMessage) {
-        const meta = state.commandTracking.get(id);
-        if (!meta) return;
-        state.commandTracking.delete(id);
-        const params = {
-          command_name: String(meta.command || "unknown"),
-          success: success ? 1 : 0,
-          duration_ms: Date.now() - meta.startedAt,
-        };
-        if (!success && errorMessage) {
-          params.error_message = String(errorMessage).slice(0, 100);
-        }
-        analytics.track("command_executed", params);
       }
 
       // Send a command to the WebSocket server
@@ -888,21 +789,16 @@
           case "command-result":
             // Forward the result from plugin code back to WebSocket
             sendSuccessResponse(message.id, message.result);
-            trackCommandResult(message.id, true);
             break;
           case "command-error":
             // Forward the error from plugin code back to WebSocket
             sendErrorResponse(message.id, message.error);
-            trackCommandResult(message.id, false, message.error);
             break;
           case "command_progress":
             // Update UI with progress information
             updateProgressUI(message);
             // Forward progress update to server
             sendProgressUpdateToServer(message);
-            break;
-          case "analytics-client-id":
-            analytics.setClientId(message.clientId);
             break;
         }
       };

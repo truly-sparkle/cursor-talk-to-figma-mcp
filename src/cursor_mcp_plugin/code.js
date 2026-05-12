@@ -57,21 +57,16 @@ async function sendProgressUpdate(
 // Show UI
 figma.showUI(__html__, { width: 350, height: 600 });
 
-// Initialize anonymous analytics client_id (persisted via clientStorage)
+// Best-effort cleanup of the legacy analyticsClientId from prior versions.
+// Older builds wrote a persistent client_id into clientStorage to identify
+// the user across sessions for GA4. Remove it on first run after the
+// telemetry was stripped (BL-057).
 (async () => {
   try {
-    let clientId = await figma.clientStorage.getAsync("analyticsClientId");
-    if (!clientId) {
-      clientId =
-        Date.now().toString(36) +
-        "-" +
-        Math.random().toString(36).slice(2, 10) +
-        Math.random().toString(36).slice(2, 10);
-      await figma.clientStorage.setAsync("analyticsClientId", clientId);
-    }
-    figma.ui.postMessage({ type: "analytics-client-id", clientId });
+    const legacy = await figma.clientStorage.getAsync("analyticsClientId");
+    if (legacy) await figma.clientStorage.deleteAsync("analyticsClientId");
   } catch (e) {
-    console.error("analytics init failed:", e);
+    // Non-fatal — clientStorage is best-effort.
   }
 })();
 

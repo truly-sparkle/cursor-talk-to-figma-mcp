@@ -11,14 +11,12 @@
   "permissions": [],
   "networkAccess": {
     "allowedDomains": [
-      "ws://localhost:3055",
-      "https://www.google-analytics.com"
+      "ws://localhost:3055"
     ],
-    "reasoning": "Connects to a local Cursor MCP relay; sends anonymous usage events to Google Analytics.",
+    "reasoning": "Connects to a local Cursor MCP relay over WebSocket.",
     "devAllowedDomains": [
       "http://localhost:3055",
-      "ws://localhost:3055",
-      "https://www.google-analytics.com"
+      "ws://localhost:3055"
     ]
   },
   "documentAccess": "dynamic-page"
