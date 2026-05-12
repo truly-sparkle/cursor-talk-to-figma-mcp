@@ -107,6 +107,41 @@ bun socket
 4. Connect the plugin to the WebSocket server by joining a channel using `join_channel`
 5. Use Cursor to communicate with Figma using the MCP tools
 
+## Optional: Relay Authentication
+
+By default the WebSocket relay (`bun socket`) accepts joins from anyone on
+the host. For non-localhost setups (e.g. WSL bridging, remote relay), set a
+shared secret on the relay process and have both the MCP server and the
+Figma plugin send it on join:
+
+```bash
+# Same value in all three places.
+export FIGMA_RELAY_TOKEN="some-long-random-string"
+
+bun socket   # relay reads it from env and rejects joins without a match
+```
+
+For the MCP server, set the same env var in your `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "TalkToFigma": {
+      "command": "bunx",
+      "args": ["cursor-talk-to-figma-mcp@latest"],
+      "env": { "FIGMA_RELAY_TOKEN": "some-long-random-string" }
+    }
+  }
+}
+```
+
+For the plugin, paste the same token into the **Relay Token** field on the
+Connection tab. It's stored in the plugin's `localStorage` so you only enter
+it once per machine.
+
+When `FIGMA_RELAY_TOKEN` is unset on the relay, all three sides skip the
+check (backward compatible).
+
 ## Local Development Setup
 
 To develop, update your mcp config to direct to your local directory.

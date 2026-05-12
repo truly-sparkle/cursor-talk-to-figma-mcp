@@ -3006,10 +3006,14 @@ function sendCommandToFigma(command, params = {}, timeoutMs) {
       return;
     }
     const id = (0, import_uuid.v4)();
+    const relayToken = process.env.FIGMA_RELAY_TOKEN || "";
     const request = {
       id,
       type: command === "join" ? "join" : "message",
-      ...command === "join" ? { channel: params.channel } : { channel: currentChannel },
+      ...command === "join" ? {
+        channel: params.channel,
+        ...relayToken ? { token: relayToken } : {}
+      } : { channel: currentChannel },
       message: {
         id,
         command,

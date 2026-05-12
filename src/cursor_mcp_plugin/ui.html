@@ -286,6 +286,16 @@
               max="65535"
             />
           </div>
+
+          <div id="token-container" style="margin-top: 12px">
+            <label for="token">Relay Token (optional)</label>
+            <input
+              type="password"
+              id="token"
+              placeholder="Leave blank if FIGMA_RELAY_TOKEN is unset"
+              autocomplete="off"
+            />
+          </div>
         </div>
 
         <div id="connection-status" class="status disconnected">
@@ -389,8 +399,27 @@
 
       // UI Elements
       const portInput = document.getElementById("port");
+      const tokenInput = document.getElementById("token");
       const connectButton = document.getElementById("btn-connect");
       const connectionStatus = document.getElementById("connection-status");
+
+      // Restore relay token from localStorage so the user doesn't have to
+      // re-enter it every time the plugin opens. Stored in plain text in
+      // the iframe's localStorage — sufficient since it's a shared secret
+      // for a localhost relay, not a credential to a remote service.
+      try {
+        const savedToken = localStorage.getItem("figmaRelayToken") || "";
+        if (savedToken) tokenInput.value = savedToken;
+      } catch (e) {
+        // localStorage may be unavailable in restricted contexts; ignore.
+      }
+      tokenInput.addEventListener("change", () => {
+        try {
+          localStorage.setItem("figmaRelayToken", tokenInput.value || "");
+        } catch (e) {
+          // ignore
+        }
+      });
 
       // Tabs
       const tabs = document.querySelectorAll(".tab");
@@ -427,6 +456,7 @@
         connectButton.textContent = isConnected ? "Disconnect" : "Connect";
         connectButton.className = isConnected ? "secondary" : "primary";
         portInput.disabled = isConnected;
+        if (tokenInput) tokenInput.disabled = isConnected;
 
         // Show/hide MCP config section
         const mcpConfig = document.getElementById("mcp-config");
@@ -457,13 +487,17 @@
             console.log("Joining channel:", channelName);
             state.channel = channelName;
 
-            // Join the channel using the same format as App.tsx
-            state.socket.send(
-              JSON.stringify({
-                type: "join",
-                channel: channelName.trim(),
-              })
-            );
+            // Optional relay token (BL-005). Empty string is treated as
+            // "not provided" by the relay and matches the unauth path.
+            const token = (tokenInput.value || "").trim();
+
+            const joinMsg = {
+              type: "join",
+              channel: channelName.trim(),
+            };
+            if (token) joinMsg.token = token;
+
+            state.socket.send(JSON.stringify(joinMsg));
           };
 
           state.socket.onmessage = (event) => {

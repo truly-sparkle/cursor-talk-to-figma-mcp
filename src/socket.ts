@@ -5,6 +5,20 @@ import { Server, ServerWebSocket } from "bun";
 // Store clients by channel
 const channels = new Map<string, Set<ServerWebSocket<any>>>();
 
+// Optional shared-secret auth (BL-005). Set FIGMA_RELAY_TOKEN to enable;
+// when set, every "join" frame must carry { token: "..." } matching it.
+// When unset (default), the relay accepts joins from anyone — backward
+// compatible with localhost-only setups.
+const REQUIRED_TOKEN = process.env.FIGMA_RELAY_TOKEN || "";
+
+// Constant-time string compare to avoid token-length / timing leaks.
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 // Channel name allow-list. Anything else is rejected to prevent stuffing
 // the channel map with arbitrary strings (memory + log noise) and to
 // reduce the chance of accidental cross-channel collisions.
@@ -119,6 +133,19 @@ const server = Bun.serve({
         if (data.type === "join") {
           const channelName = data.channel;
           if (!validateChannelName(ws, channelName)) return;
+
+          // Optional token check (BL-005). Only enforced when the env var
+          // is set, so default behavior is unchanged.
+          if (REQUIRED_TOKEN) {
+            const provided = typeof data.token === "string" ? data.token : "";
+            if (!safeEqual(provided, REQUIRED_TOKEN)) {
+              ws.send(JSON.stringify({
+                type: "error",
+                message: "Invalid or missing relay token",
+              }));
+              return;
+            }
+          }
 
           // Create channel if it doesn't exist
           if (!channels.has(channelName)) {

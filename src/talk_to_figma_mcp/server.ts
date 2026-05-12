@@ -3960,11 +3960,17 @@ function sendCommandToFigma(
     }
 
     const id = uuidv4();
+    // Optional shared-secret for the relay (BL-005). If set, attach it to
+    // every "join" frame; otherwise omit the field entirely.
+    const relayToken = process.env.FIGMA_RELAY_TOKEN || "";
     const request = {
       id,
       type: command === "join" ? "join" : "message",
       ...(command === "join"
-        ? { channel: (params as any).channel }
+        ? {
+            channel: (params as any).channel,
+            ...(relayToken ? { token: relayToken } : {}),
+          }
         : { channel: currentChannel }),
       message: {
         id,
