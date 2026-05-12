@@ -258,6 +258,12 @@ async function handleCommand(command, params) {
       return await setSharedPluginData(params);
     case "get_shared_plugin_data":
       return await getSharedPluginData(params);
+    case "create_sticky":
+      return await createSticky(params);
+    case "create_shape_with_text":
+      return await createShapeWithText(params);
+    case "create_table":
+      return await createTable(params);
     case "create_component_from_node":
       return await createComponentFromNode(params);
     case "detach_instance":
@@ -1877,6 +1883,109 @@ async function deleteStyle(params) {
 }
 
 // ---- Design System: Components (create / detach / swap) -----------
+
+// ---- FigJam nodes (BL-035) ----------------------------------------
+//
+// These APIs only exist when the file is a FigJam document. We surface a
+// clearer error than "function is not defined" when called from a Figma
+// design file.
+
+function ensureFigjam(api) {
+  if (typeof figma[api] !== "function") {
+    throw new Error(
+      "figma." + api + " is not available — current editor type is " +
+      figma.editorType + ". This tool only works in FigJam files."
+    );
+  }
+}
+
+async function placeAt(node, x, y, parentId) {
+  if (typeof x === "number") node.x = x;
+  if (typeof y === "number") node.y = y;
+  if (parentId) {
+    const parent = await figma.getNodeByIdAsync(parentId);
+    if (!parent) throw new Error("Parent not found: " + parentId);
+    if (typeof parent.appendChild !== "function") {
+      throw new Error("Target is not a container: " + parentId);
+    }
+    parent.appendChild(node);
+  }
+}
+
+const STICKY_AUTHOR_VISIBILITY = new Set(["TRUE", "FALSE"]);
+
+async function createSticky(params) {
+  ensureFigjam("createSticky");
+  const { text, x, y, parentId, authorVisible } = params || {};
+  const sticky = figma.createSticky();
+  if (typeof text === "string" && text.length > 0) {
+    if (sticky.text && typeof sticky.text.characters !== "undefined") {
+      // sticky.text is a TextNode-like sub-object; setting characters
+      // requires the default font to be loaded.
+      await figma.loadFontAsync(sticky.text.fontName || { family: "Inter", style: "Medium" });
+      sticky.text.characters = text;
+    }
+  }
+  if (typeof authorVisible === "boolean") sticky.authorVisible = authorVisible;
+  await placeAt(sticky, x, y, parentId);
+  return { id: sticky.id, name: sticky.name, type: sticky.type, x: sticky.x, y: sticky.y };
+}
+
+const SHAPE_WITH_TEXT_TYPES = new Set([
+  "SQUARE", "ELLIPSE", "ROUNDED_RECTANGLE", "DIAMOND", "TRIANGLE_UP",
+  "TRIANGLE_DOWN", "PARALLELOGRAM_RIGHT", "PARALLELOGRAM_LEFT",
+  "ENG_DATABASE", "ENG_QUEUE", "ENG_FILE", "ENG_FOLDER",
+  "TRAPEZOID", "PREDEFINED_PROCESS", "SHIELD", "DOCUMENT_SINGLE",
+  "DOCUMENT_MULTIPLE", "MANUAL_INPUT", "HEXAGON", "CHEVRON_RIGHT_ARROW",
+  "CHEVRON_RIGHT_DOUBLE_ARROW", "CHEVRON_LEFT_ARROW", "FLOWCHART_PROCESS",
+]);
+
+async function createShapeWithText(params) {
+  ensureFigjam("createShapeWithText");
+  const {
+    shapeType = "SQUARE",
+    text,
+    x, y, parentId,
+    width, height,
+  } = params || {};
+  if (!SHAPE_WITH_TEXT_TYPES.has(shapeType)) {
+    throw new Error("Invalid shapeType: " + shapeType);
+  }
+  const shape = figma.createShapeWithText();
+  shape.shapeType = shapeType;
+  if (typeof text === "string" && text.length > 0 && shape.text) {
+    await figma.loadFontAsync(shape.text.fontName || { family: "Inter", style: "Medium" });
+    shape.text.characters = text;
+  }
+  if (typeof width === "number" && typeof height === "number") {
+    shape.resize(width, height);
+  }
+  await placeAt(shape, x, y, parentId);
+  return {
+    id: shape.id,
+    name: shape.name,
+    type: shape.type,
+    shapeType: shape.shapeType,
+    x: shape.x, y: shape.y,
+  };
+}
+
+async function createTable(params) {
+  ensureFigjam("createTable");
+  const { rows = 2, cols = 2, x, y, parentId } = params || {};
+  if (!Number.isInteger(rows) || rows < 1) throw new Error("rows must be a positive integer");
+  if (!Number.isInteger(cols) || cols < 1) throw new Error("cols must be a positive integer");
+  const table = figma.createTable(rows, cols);
+  await placeAt(table, x, y, parentId);
+  return {
+    id: table.id,
+    name: table.name,
+    type: table.type,
+    numRows: table.numRows,
+    numColumns: table.numColumns,
+    x: table.x, y: table.y,
+  };
+}
 
 // ---- Plugin Data / metadata (BL-026) ------------------------------
 

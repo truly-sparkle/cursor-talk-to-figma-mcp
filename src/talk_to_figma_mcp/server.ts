@@ -985,6 +985,57 @@ wrapToolHandler(
   (r: any) => `${r.namespace}/${r.key} = ${JSON.stringify(r.value)}`,
 );
 
+// ---- FigJam nodes (BL-035) ----------------------------------------
+// All three tools require the file to be a FigJam document; in a Figma
+// design file the underlying API is undefined and the plugin returns
+// a clear error.
+
+wrapToolHandler(
+  "create_sticky",
+  "Create a FigJam sticky note. text optional. authorVisible toggles the author footer.",
+  {
+    text: z.string().optional(),
+    x: z.number().optional(),
+    y: z.number().optional(),
+    parentId: z.string().optional().describe("Container to insert into (default: current page)"),
+    authorVisible: z.boolean().optional(),
+  },
+  (r: any) => `Created sticky "${r.id}" at (${r.x}, ${r.y})`,
+);
+
+wrapToolHandler(
+  "create_shape_with_text",
+  "Create a FigJam shape-with-text (flowchart shape with embedded label). " +
+  "shapeType: SQUARE | ELLIPSE | ROUNDED_RECTANGLE | DIAMOND | TRIANGLE_UP | TRIANGLE_DOWN | " +
+  "PARALLELOGRAM_RIGHT | PARALLELOGRAM_LEFT | TRAPEZOID | HEXAGON | " +
+  "PREDEFINED_PROCESS | DOCUMENT_SINGLE | DOCUMENT_MULTIPLE | MANUAL_INPUT | SHIELD | " +
+  "ENG_DATABASE | ENG_QUEUE | ENG_FILE | ENG_FOLDER | " +
+  "CHEVRON_RIGHT_ARROW | CHEVRON_RIGHT_DOUBLE_ARROW | CHEVRON_LEFT_ARROW | FLOWCHART_PROCESS",
+  {
+    shapeType: z.string().optional().describe("Default SQUARE"),
+    text: z.string().optional(),
+    x: z.number().optional(),
+    y: z.number().optional(),
+    parentId: z.string().optional(),
+    width: z.number().positive().optional(),
+    height: z.number().positive().optional(),
+  },
+  (r: any) => `Created shape-with-text (${r.shapeType}) "${r.id}"`,
+);
+
+wrapToolHandler(
+  "create_table",
+  "Create a FigJam table with `rows` × `cols` cells. Default 2×2.",
+  {
+    rows: z.number().int().positive().optional(),
+    cols: z.number().int().positive().optional(),
+    x: z.number().optional(),
+    y: z.number().optional(),
+    parentId: z.string().optional(),
+  },
+  (r: any) => `Created table ${r.numRows}×${r.numColumns} "${r.id}"`,
+);
+
 wrapToolHandler(
   "get_viewport_bounds",
   "Read the current Figma viewport: center (canvas coords), zoom factor, and visible bounds rect.",
@@ -3519,6 +3570,9 @@ type FigmaCommand =
   | "get_plugin_data"
   | "set_shared_plugin_data"
   | "get_shared_plugin_data"
+  | "create_sticky"
+  | "create_shape_with_text"
+  | "create_table"
   | "create_component_from_node"
   | "detach_instance"
   | "swap_instance"
@@ -3740,6 +3794,14 @@ type CommandParams = {
   get_plugin_data: { nodeId: string; key: string };
   set_shared_plugin_data: { nodeId: string; namespace: string; key: string; value: string };
   get_shared_plugin_data: { nodeId: string; namespace: string; key: string };
+  create_sticky: { text?: string; x?: number; y?: number; parentId?: string; authorVisible?: boolean };
+  create_shape_with_text: {
+    shapeType?: string;
+    text?: string;
+    x?: number; y?: number; parentId?: string;
+    width?: number; height?: number;
+  };
+  create_table: { rows?: number; cols?: number; x?: number; y?: number; parentId?: string };
   create_component_from_node: { nodeId: string };
   detach_instance: { nodeId: string };
   swap_instance: { nodeId: string; mainComponentId: string };
