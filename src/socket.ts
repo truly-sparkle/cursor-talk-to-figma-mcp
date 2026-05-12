@@ -5,6 +5,35 @@ import { Server, ServerWebSocket } from "bun";
 // Store clients by channel
 const channels = new Map<string, Set<ServerWebSocket<any>>>();
 
+// Channel name allow-list. Anything else is rejected to prevent stuffing
+// the channel map with arbitrary strings (memory + log noise) and to
+// reduce the chance of accidental cross-channel collisions.
+const CHANNEL_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+
+function rejectChannelName(ws: ServerWebSocket<any>, reason: string): void {
+  ws.send(JSON.stringify({
+    type: "error",
+    message: reason,
+  }));
+}
+
+// Returns true if the channel name passes validation, false (and replies
+// with an error) otherwise.
+function validateChannelName(ws: ServerWebSocket<any>, name: unknown): name is string {
+  if (typeof name !== "string" || name.length === 0) {
+    rejectChannelName(ws, "Channel name is required");
+    return false;
+  }
+  if (!CHANNEL_NAME_RE.test(name)) {
+    rejectChannelName(
+      ws,
+      "Invalid channel name (allowed: 1-64 chars, [a-zA-Z0-9_-])"
+    );
+    return false;
+  }
+  return true;
+}
+
 function handleConnection(ws: ServerWebSocket<any>) {
   // Don't add to clients immediately - wait for channel join
   console.log("New client connected");
@@ -89,13 +118,7 @@ const server = Bun.serve({
 
         if (data.type === "join") {
           const channelName = data.channel;
-          if (!channelName || typeof channelName !== "string") {
-            ws.send(JSON.stringify({
-              type: "error",
-              message: "Channel name is required"
-            }));
-            return;
-          }
+          if (!validateChannelName(ws, channelName)) return;
 
           // Create channel if it doesn't exist
           if (!channels.has(channelName)) {
@@ -140,13 +163,7 @@ const server = Bun.serve({
         // Handle regular messages
         if (data.type === "message") {
           const channelName = data.channel;
-          if (!channelName || typeof channelName !== "string") {
-            ws.send(JSON.stringify({
-              type: "error",
-              message: "Channel name is required"
-            }));
-            return;
-          }
+          if (!validateChannelName(ws, channelName)) return;
 
           const channelClients = channels.get(channelName);
           if (!channelClients || !channelClients.has(ws)) {
