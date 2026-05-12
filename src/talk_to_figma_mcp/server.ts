@@ -911,6 +911,19 @@ nodePropTool(
   (r: any) => `Set "${r.name}" blendMode: ${r.blendMode}`,
 );
 
+wrapToolHandler(
+  "set_constraints",
+  "Set constraint behavior on a non-auto-layout child. " +
+  "horizontal/vertical each accept: MIN | MAX | CENTER | STRETCH | SCALE. " +
+  "Provide one or both — omitted axis is left unchanged.",
+  {
+    nodeId: z.string().describe("Target node id"),
+    horizontal: z.enum(["MIN", "MAX", "CENTER", "STRETCH", "SCALE"]).optional(),
+    vertical: z.enum(["MIN", "MAX", "CENTER", "STRETCH", "SCALE"]).optional(),
+  },
+  (r: any) => `Set constraints on "${r.name}": ${JSON.stringify(r.constraints)}`,
+);
+
 // -------------------------------------------------------------------
 
 // ---- Design System: Variables (read) ------------------------------
@@ -3334,6 +3347,7 @@ type FigmaCommand =
   | "apply_style"
   | "rename_style"
   | "delete_style"
+  | "set_constraints"
   | "create_component_from_node"
   | "detach_instance"
   | "swap_instance"
@@ -3530,6 +3544,11 @@ type CommandParams = {
   };
   rename_style: { styleId: string; name: string };
   delete_style: { styleId: string };
+  set_constraints: {
+    nodeId: string;
+    horizontal?: "MIN" | "MAX" | "CENTER" | "STRETCH" | "SCALE";
+    vertical?: "MIN" | "MAX" | "CENTER" | "STRETCH" | "SCALE";
+  };
   create_component_from_node: { nodeId: string };
   detach_instance: { nodeId: string };
   swap_instance: { nodeId: string; mainComponentId: string };

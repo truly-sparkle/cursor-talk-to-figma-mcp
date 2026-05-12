@@ -232,6 +232,8 @@ async function handleCommand(command, params) {
       return await renameStyle(params);
     case "delete_style":
       return await deleteStyle(params);
+    case "set_constraints":
+      return await setConstraints(params);
     case "create_component_from_node":
       return await createComponentFromNode(params);
     case "detach_instance":
@@ -1851,6 +1853,35 @@ async function deleteStyle(params) {
 }
 
 // ---- Design System: Components (create / detach / swap) -----------
+
+// ---- Layout: Constraints (BL-019) ---------------------------------
+
+const CONSTRAINT_VALUES = new Set(["MIN", "MAX", "CENTER", "STRETCH", "SCALE"]);
+
+async function setConstraints(params) {
+  const { nodeId, horizontal, vertical } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (!horizontal && !vertical) {
+    throw new Error("Provide at least one of horizontal/vertical");
+  }
+  if (horizontal && !CONSTRAINT_VALUES.has(horizontal)) {
+    throw new Error("Invalid horizontal: " + horizontal);
+  }
+  if (vertical && !CONSTRAINT_VALUES.has(vertical)) {
+    throw new Error("Invalid vertical: " + vertical);
+  }
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!("constraints" in node)) {
+    throw new Error("Node does not support constraints: " + node.type);
+  }
+  // node.constraints is a frozen object — must replace wholesale.
+  const next = Object.assign({}, node.constraints);
+  if (horizontal) next.horizontal = horizontal;
+  if (vertical) next.vertical = vertical;
+  node.constraints = next;
+  return { id: node.id, name: node.name, constraints: node.constraints };
+}
 
 async function createComponentFromNode(params) {
   const { nodeId } = params || {};
