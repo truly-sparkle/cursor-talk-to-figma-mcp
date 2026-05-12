@@ -266,6 +266,20 @@ async function handleCommand(command, params) {
       return await setOverflowDirection(params);
     case "set_prototype_device":
       return await setPrototypeDevice(params);
+    case "set_individual_corner_radii":
+      return await setIndividualCornerRadii(params);
+    case "set_corner_smoothing":
+      return await setCornerSmoothing(params);
+    case "set_rotation":
+      return await setRotation(params);
+    case "set_flip":
+      return await setFlip(params);
+    case "flatten":
+      return await flattenNodes(params);
+    case "outline_stroke":
+      return await outlineStroke(params);
+    case "boolean_operation":
+      return await booleanOperation(params);
     case "set_plugin_data":
       return await setPluginData(params);
     case "get_plugin_data":
@@ -6103,5 +6117,252 @@ async function setDevStatus(params) {
           description: current.description == null ? "" : current.description,
         }
       : null,
+  };
+}
+// ---- Corner / Geometry (BL-022) -----------------------------------
+//
+// Granular corner-radius, rotation, flip, and vector-shape operations.
+// The plugin runtime forbids ES2018+ object spread, optional chaining,
+// and nullish coalescing — we use Object.assign / explicit guards.
+
+async function setIndividualCornerRadii(params) {
+  const p = params || {};
+  const nodeId = p.nodeId;
+  if (!nodeId) throw new Error("Missing nodeId");
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!("topLeftRadius" in node)) {
+    throw new Error("Node does not support per-corner radii: " + node.type);
+  }
+
+  const tl = p.topLeft;
+  const tr = p.topRight;
+  const bl = p.bottomLeft;
+  const br = p.bottomRight;
+  if (tl == null && tr == null && bl == null && br == null) {
+    throw new Error("Provide at least one of topLeft / topRight / bottomLeft / bottomRight");
+  }
+
+  if (tl != null) node.topLeftRadius = tl;
+  if (tr != null) node.topRightRadius = tr;
+  if (bl != null) node.bottomLeftRadius = bl;
+  if (br != null) node.bottomRightRadius = br;
+
+  return {
+    id: node.id,
+    name: node.name,
+    topLeftRadius: node.topLeftRadius,
+    topRightRadius: node.topRightRadius,
+    bottomLeftRadius: node.bottomLeftRadius,
+    bottomRightRadius: node.bottomRightRadius,
+  };
+}
+
+async function setCornerSmoothing(params) {
+  const p = params || {};
+  const nodeId = p.nodeId;
+  const smoothing = p.smoothing;
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (typeof smoothing !== "number" || !isFinite(smoothing)) {
+    throw new Error("smoothing must be a number 0..1");
+  }
+  if (smoothing < 0 || smoothing > 1) {
+    throw new Error("smoothing must be in range 0..1 (got " + smoothing + ")");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!("cornerSmoothing" in node)) {
+    throw new Error("Node does not support cornerSmoothing: " + node.type);
+  }
+
+  node.cornerSmoothing = smoothing;
+  return { id: node.id, name: node.name, cornerSmoothing: node.cornerSmoothing };
+}
+
+async function setRotation(params) {
+  const p = params || {};
+  const nodeId = p.nodeId;
+  const degrees = p.degrees;
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (typeof degrees !== "number" || !isFinite(degrees)) {
+    throw new Error("degrees must be a finite number");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!("rotation" in node)) {
+    throw new Error("Node does not support rotation: " + node.type);
+  }
+
+  node.rotation = degrees;
+  return { id: node.id, name: node.name, rotation: node.rotation };
+}
+
+async function setFlip(params) {
+  const p = params || {};
+  const nodeId = p.nodeId;
+  const horizontal = p.horizontal === true;
+  const vertical = p.vertical === true;
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (!horizontal && !vertical) {
+    throw new Error("Provide horizontal=true and/or vertical=true");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!("relativeTransform" in node)) {
+    throw new Error("Node does not support relativeTransform: " + node.type);
+  }
+
+  // relativeTransform shape: [[a, b, tx], [c, d, ty]]
+  // Horizontal flip: negate the X column (a, c) and shift tx by width so the
+  // node visually stays anchored at its top-left bounding box. Vertical:
+  // negate the Y column (b, d) and shift ty by height. Calling twice
+  // restores the original transform — the (-1)*(-1)=1 cancels and the
+  // double translate sums to zero (since the post-flip width/height match
+  // the pre-flip values for an axis-aligned box).
+  const t = node.relativeTransform;
+  let a = t[0][0], b = t[0][1], tx = t[0][2];
+  let c = t[1][0], d = t[1][1], ty = t[1][2];
+  const width = node.width;
+  const height = node.height;
+
+  if (horizontal) {
+    a = -a;
+    c = -c;
+    tx = tx + width;
+  }
+  if (vertical) {
+    b = -b;
+    d = -d;
+    ty = ty + height;
+  }
+
+  node.relativeTransform = [[a, b, tx], [c, d, ty]];
+
+  return {
+    id: node.id,
+    name: node.name,
+    horizontal: horizontal,
+    vertical: vertical,
+    relativeTransform: node.relativeTransform,
+  };
+}
+
+async function flattenNodes(params) {
+  const p = params || {};
+  const nodeIds = p.nodeIds;
+  if (!Array.isArray(nodeIds) || nodeIds.length === 0) {
+    throw new Error("nodeIds must be a non-empty array");
+  }
+
+  const nodes = [];
+  const notFound = [];
+  for (let i = 0; i < nodeIds.length; i++) {
+    const n = await figma.getNodeByIdAsync(nodeIds[i]);
+    if (n) nodes.push(n);
+    else notFound.push(nodeIds[i]);
+  }
+  if (nodes.length === 0) {
+    throw new Error("No nodes found for IDs: " + nodeIds.join(", "));
+  }
+
+  let parent = null;
+  if (p.parentId) {
+    parent = await figma.getNodeByIdAsync(p.parentId);
+    if (!parent) throw new Error("Parent not found: " + p.parentId);
+  }
+
+  const result = parent
+    ? figma.flatten(nodes, parent)
+    : figma.flatten(nodes);
+
+  return {
+    id: result.id,
+    name: result.name,
+    type: result.type,
+    parentId: result.parent ? result.parent.id : null,
+    notFoundIds: notFound,
+  };
+}
+
+async function outlineStroke(params) {
+  const p = params || {};
+  const nodeId = p.nodeId;
+  if (!nodeId) throw new Error("Missing nodeId");
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (typeof node.outlineStroke !== "function") {
+    throw new Error("Node does not support outlineStroke: " + node.type);
+  }
+
+  const result = node.outlineStroke();
+  if (!result) {
+    return {
+      id: null,
+      sourceId: node.id,
+      sourceName: node.name,
+      message: "Node has no stroke to outline (outlineStroke returned null)",
+    };
+  }
+
+  return {
+    id: result.id,
+    name: result.name,
+    type: result.type,
+    sourceId: node.id,
+    sourceName: node.name,
+  };
+}
+
+async function booleanOperation(params) {
+  const p = params || {};
+  const nodeIds = p.nodeIds;
+  const operation = p.operation;
+  if (!Array.isArray(nodeIds) || nodeIds.length < 2) {
+    throw new Error("nodeIds must be an array of at least 2 ids");
+  }
+  if (operation !== "union" && operation !== "subtract" && operation !== "intersect" && operation !== "exclude") {
+    throw new Error("operation must be one of: union | subtract | intersect | exclude");
+  }
+
+  const nodes = [];
+  const notFound = [];
+  for (let i = 0; i < nodeIds.length; i++) {
+    const n = await figma.getNodeByIdAsync(nodeIds[i]);
+    if (n) nodes.push(n);
+    else notFound.push(nodeIds[i]);
+  }
+  if (nodes.length < 2) {
+    throw new Error("Need at least 2 valid nodes; got " + nodes.length);
+  }
+
+  let parent = null;
+  if (p.parentId) {
+    parent = await figma.getNodeByIdAsync(p.parentId);
+    if (!parent) throw new Error("Parent not found: " + p.parentId);
+  }
+
+  let result;
+  if (operation === "union") {
+    result = parent ? figma.union(nodes, parent) : figma.union(nodes, nodes[0].parent);
+  } else if (operation === "subtract") {
+    result = parent ? figma.subtract(nodes, parent) : figma.subtract(nodes, nodes[0].parent);
+  } else if (operation === "intersect") {
+    result = parent ? figma.intersect(nodes, parent) : figma.intersect(nodes, nodes[0].parent);
+  } else {
+    result = parent ? figma.exclude(nodes, parent) : figma.exclude(nodes, nodes[0].parent);
+  }
+
+  return {
+    id: result.id,
+    name: result.name,
+    type: result.type,
+    operation: operation,
+    parentId: result.parent ? result.parent.id : null,
+    notFoundIds: notFound,
   };
 }

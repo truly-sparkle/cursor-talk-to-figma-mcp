@@ -1277,6 +1277,98 @@ wrapToolHandler(
   (r: any) => `Set constraints on "${r.name}": ${JSON.stringify(r.constraints)}`,
 );
 
+// ---- Corner / Geometry (BL-022) -----------------------------------
+//
+// `set_corner_radius` (above) sets a uniform radius. These tools fill the
+// granular gap: per-corner radii, squircle smoothing, rotation, axis flip,
+// flatten, outline-stroke, and boolean ops (union/subtract/intersect/exclude).
+
+wrapToolHandler(
+  "set_individual_corner_radii",
+  "Set per-corner radius on a node (RECTANGLE / FRAME / COMPONENT / INSTANCE). " +
+  "Provide one or more of topLeft / topRight / bottomLeft / bottomRight; omitted corners are left unchanged. " +
+  "For uniform radius, use set_corner_radius.",
+  {
+    nodeId: z.string(),
+    topLeft: z.number().min(0).optional(),
+    topRight: z.number().min(0).optional(),
+    bottomLeft: z.number().min(0).optional(),
+    bottomRight: z.number().min(0).optional(),
+  },
+  (r: any) =>
+    `Set corner radii on "${r.name}": TL=${r.topLeftRadius} TR=${r.topRightRadius} BL=${r.bottomLeftRadius} BR=${r.bottomRightRadius}`,
+);
+
+wrapToolHandler(
+  "set_corner_smoothing",
+  "Set corner smoothing (squircle) on a node. smoothing is 0..1 (0 = circular arc, 1 = full iOS-style squircle).",
+  {
+    nodeId: z.string(),
+    smoothing: z.number().min(0).max(1).describe("0..1"),
+  },
+  (r: any) => `Set cornerSmoothing on "${r.name}" to ${r.cornerSmoothing}`,
+);
+
+wrapToolHandler(
+  "set_rotation",
+  "Set node rotation in degrees. Counter-clockwise positive. Anchor is the node's pivot.",
+  {
+    nodeId: z.string(),
+    degrees: z.number().describe("Rotation in degrees"),
+  },
+  (r: any) => `Set rotation of "${r.name}" to ${r.rotation}°`,
+);
+
+wrapToolHandler(
+  "set_flip",
+  "Flip a node horizontally and/or vertically by mutating its relativeTransform. " +
+  "The flipped node stays anchored at its original top-left bounding box. " +
+  "Round-trip safe — calling twice with the same axes restores the original transform.",
+  {
+    nodeId: z.string(),
+    horizontal: z.boolean().optional().describe("Mirror across the vertical axis"),
+    vertical: z.boolean().optional().describe("Mirror across the horizontal axis"),
+  },
+  (r: any) =>
+    `Flipped "${r.name}" (horizontal=${r.horizontal}, vertical=${r.vertical})`,
+);
+
+wrapToolHandler(
+  "flatten",
+  "Flatten one or more nodes into a single VectorNode (figma.flatten). " +
+  "Useful for collapsing complex shape stacks into a single editable path. parentId optional — defaults to first node's parent.",
+  {
+    nodeIds: z.array(z.string()).min(1),
+    parentId: z.string().optional(),
+  },
+  (r: any) => `Flattened ${r.notFoundIds.length === 0 ? "all" : ""} nodes into ${r.type} "${r.id}"`,
+);
+
+wrapToolHandler(
+  "outline_stroke",
+  "Convert a node's stroke into a filled VectorNode path (node.outlineStroke). " +
+  "Returns id=null with a message if the node has no stroke.",
+  {
+    nodeId: z.string(),
+  },
+  (r: any) =>
+    r.id == null
+      ? `outline_stroke: ${r.message} (source: "${r.sourceName}")`
+      : `Outlined stroke of "${r.sourceName}" → ${r.type} "${r.id}"`,
+);
+
+wrapToolHandler(
+  "boolean_operation",
+  "Combine two or more nodes via a vector boolean op. " +
+  "operation: union | subtract | intersect | exclude. parentId optional (defaults to first node's parent).",
+  {
+    nodeIds: z.array(z.string()).min(2),
+    operation: z.enum(["union", "subtract", "intersect", "exclude"]),
+    parentId: z.string().optional(),
+  },
+  (r: any) => `Boolean ${r.operation} → ${r.type} "${r.id}"`,
+);
+
 // -------------------------------------------------------------------
 
 // ---- Design System: Variables (read) ------------------------------
@@ -3786,7 +3878,14 @@ type FigmaCommand =
   | "set_selections"
   | "set_dev_resource"
   | "get_dev_resources"
-  | "set_dev_status";
+  | "set_dev_status"
+  | "set_individual_corner_radii"
+  | "set_corner_smoothing"
+  | "set_rotation"
+  | "set_flip"
+  | "flatten"
+  | "outline_stroke"
+  | "boolean_operation";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4136,6 +4235,23 @@ type CommandParams = {
     type?: "NONE" | "PRESET" | "CUSTOM" | "PRESENTATION";
     size?: { width: number; height: number };
     rotation?: "NONE" | "CCW_90";
+  };
+  set_individual_corner_radii: {
+    nodeId: string;
+    topLeft?: number;
+    topRight?: number;
+    bottomLeft?: number;
+    bottomRight?: number;
+  };
+  set_corner_smoothing: { nodeId: string; smoothing: number };
+  set_rotation: { nodeId: string; degrees: number };
+  set_flip: { nodeId: string; horizontal?: boolean; vertical?: boolean };
+  flatten: { nodeIds: string[]; parentId?: string };
+  outline_stroke: { nodeId: string };
+  boolean_operation: {
+    nodeIds: string[];
+    operation: "union" | "subtract" | "intersect" | "exclude";
+    parentId?: string;
   };
 
 };
