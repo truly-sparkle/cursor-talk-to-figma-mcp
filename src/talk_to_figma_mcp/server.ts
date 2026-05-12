@@ -1630,34 +1630,61 @@ server.tool(
   }
 );
 
-// Export Node as Image Tool
+// Export Node as Image Tool (BL-025)
 server.tool(
   "export_node_as_image",
-  "Export a node as an image from Figma",
+  "Export a node as an image. Format defaults to PNG.\n" +
+  "- PNG/JPG: raster. Use `scale` (shortcut for SCALE constraint) or pass `constraint: { type:'SCALE'|'WIDTH'|'HEIGHT', value }`.\n" +
+  "  Optional `contentsOnly` (excludes shadows/strokes outside bounds) and `useAbsoluteBounds`.\n" +
+  "- SVG/PDF: vector. `scale`/`constraint`/`contentsOnly`/`useAbsoluteBounds` are ignored.\n" +
+  "Returned as base64 plus MIME type; the MCP envelope re-wraps as image content for raster formats.",
   {
     nodeId: z.string().describe("The ID of the node to export"),
-    format: z
-      .enum(["PNG", "JPG", "SVG", "PDF"])
-      .optional()
-      .describe("Export format"),
-    scale: z.number().positive().optional().describe("Export scale"),
+    format: z.enum(["PNG", "JPG", "SVG", "PDF"]).optional().describe("Export format (default PNG)"),
+    scale: z.number().positive().optional().describe("Raster scale shortcut (1 = native, 2 = 2x). Ignored for SVG/PDF."),
+    constraint: z.object({
+      type: z.enum(["SCALE", "WIDTH", "HEIGHT"]),
+      value: z.number().positive(),
+    }).optional().describe("Explicit raster constraint; overrides `scale`."),
+    contentsOnly: z.boolean().optional().describe("PNG/JPG only: exclude content outside the node's frame"),
+    useAbsoluteBounds: z.boolean().optional().describe("PNG/JPG only: use absolute bounding box"),
   },
-  async ({ nodeId, format, scale }: any) => {
+  async ({ nodeId, format, scale, constraint, contentsOnly, useAbsoluteBounds }: any) => {
     try {
       const result = await sendCommandToFigma("export_node_as_image", {
         nodeId,
         format: format || "PNG",
         scale: scale || 1,
+        constraint,
+        contentsOnly,
+        useAbsoluteBounds,
       });
-      const typedResult = result as { imageData: string; mimeType: string };
+      const typedResult = result as {
+        imageData: string;
+        mimeType: string;
+        format: string;
+        byteLength: number;
+      };
 
+      // Raster formats (PNG/JPG) return as MCP image content for inline preview;
+      // vector formats (SVG/PDF) return as text + base64 since image preview
+      // typically doesn't render them.
+      const isRaster = typedResult.format === "PNG" || typedResult.format === "JPG";
+      if (isRaster) {
+        return {
+          content: [
+            {
+              type: "image",
+              data: typedResult.imageData,
+              mimeType: typedResult.mimeType || "image/png",
+            },
+          ],
+        };
+      }
       return {
         content: [
-          {
-            type: "image",
-            data: typedResult.imageData,
-            mimeType: typedResult.mimeType || "image/png",
-          },
+          { type: "text", text: `Exported ${typedResult.format} (${typedResult.byteLength} bytes, ${typedResult.mimeType})` },
+          { type: "text", text: typedResult.imageData },
         ],
       };
     } catch (error) {
@@ -1665,8 +1692,7 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error exporting node as image: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error exporting node as image: ${error instanceof Error ? error.message : String(error)}`,
           },
         ],
       };
@@ -3712,6 +3738,9 @@ type CommandParams = {
     nodeId: string;
     format?: "PNG" | "JPG" | "SVG" | "PDF";
     scale?: number;
+    constraint?: { type: "SCALE" | "WIDTH" | "HEIGHT"; value: number };
+    contentsOnly?: boolean;
+    useAbsoluteBounds?: boolean;
   };
   execute_code: {
     code: string;

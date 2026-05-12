@@ -2629,63 +2629,85 @@ async function createComponentInstance(params) {
   }
 }
 
+// BL-025: format/constraint extended. PNG/JPG support raster constraints
+// (SCALE/WIDTH/HEIGHT), SVG/PDF are vector and ignore constraint type.
+const VALID_EXPORT_FORMATS = new Set(["PNG", "JPG", "SVG", "PDF"]);
+const VALID_CONSTRAINT_TYPES = new Set(["SCALE", "WIDTH", "HEIGHT"]);
+
+function mimeForExportFormat(format) {
+  switch (format) {
+    case "PNG": return "image/png";
+    case "JPG": return "image/jpeg";
+    case "SVG": return "image/svg+xml";
+    case "PDF": return "application/pdf";
+    default:    return "application/octet-stream";
+  }
+}
+
 async function exportNodeAsImage(params) {
-  const { nodeId, scale = 1 } = params || {};
+  const {
+    nodeId,
+    scale = 1,
+    format = "PNG",
+    constraint,
+    contentsOnly,
+    useAbsoluteBounds,
+  } = params || {};
 
-  const format = "PNG";
-
-  if (!nodeId) {
-    throw new Error("Missing nodeId parameter");
+  if (!nodeId) throw new Error("Missing nodeId parameter");
+  if (!VALID_EXPORT_FORMATS.has(format)) {
+    throw new Error("Invalid format: " + format + " (PNG | JPG | SVG | PDF)");
   }
 
   const node = await figma.getNodeByIdAsync(nodeId);
-  if (!node) {
-    throw new Error(`Node not found with ID: ${nodeId}`);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("exportAsync" in node)) {
+    throw new Error("Node does not support exporting: " + nodeId);
   }
 
-  if (!("exportAsync" in node)) {
-    throw new Error(`Node does not support exporting: ${nodeId}`);
+  // Build settings per format. exportAsync's typed unions reject unknown keys
+  // for SVG/PDF, so we keep raster-only options out of those branches.
+  let settings;
+  if (format === "SVG") {
+    settings = { format: "SVG" };
+  } else if (format === "PDF") {
+    settings = { format: "PDF" };
+  } else {
+    // PNG or JPG
+    let resolvedConstraint;
+    if (constraint && typeof constraint === "object") {
+      if (!VALID_CONSTRAINT_TYPES.has(constraint.type)) {
+        throw new Error("Invalid constraint.type: " + constraint.type);
+      }
+      if (typeof constraint.value !== "number" || constraint.value <= 0) {
+        throw new Error("constraint.value must be a positive number");
+      }
+      resolvedConstraint = { type: constraint.type, value: constraint.value };
+    } else {
+      resolvedConstraint = { type: "SCALE", value: scale };
+    }
+    settings = {
+      format: format,
+      constraint: resolvedConstraint,
+    };
+    if (typeof contentsOnly === "boolean") settings.contentsOnly = contentsOnly;
+    if (typeof useAbsoluteBounds === "boolean") settings.useAbsoluteBounds = useAbsoluteBounds;
   }
 
   try {
-    const settings = {
-      format: format,
-      constraint: { type: "SCALE", value: scale },
-    };
-
     const bytes = await node.exportAsync(settings);
-
-    let mimeType;
-    switch (format) {
-      case "PNG":
-        mimeType = "image/png";
-        break;
-      case "JPG":
-        mimeType = "image/jpeg";
-        break;
-      case "SVG":
-        mimeType = "image/svg+xml";
-        break;
-      case "PDF":
-        mimeType = "application/pdf";
-        break;
-      default:
-        mimeType = "application/octet-stream";
-    }
-
-    // Proper way to convert Uint8Array to base64
+    const mimeType = mimeForExportFormat(format);
     const base64 = customBase64Encode(bytes);
-    // const imageData = `data:${mimeType};base64,${base64}`;
-
     return {
-      nodeId,
-      format,
-      scale,
-      mimeType,
+      nodeId: nodeId,
+      format: format,
+      settings: settings,
+      byteLength: bytes.length,
+      mimeType: mimeType,
       imageData: base64,
     };
   } catch (error) {
-    throw new Error(`Error exporting node as image: ${error.message}`);
+    throw new Error("Error exporting node: " + (error.message || String(error)));
   }
 }
 function customBase64Encode(bytes) {
