@@ -6,6 +6,25 @@ const state = {
   serverPort: 3055, // Default port
 };
 
+// ---- Logger (BL-038) ----------------------------------------------
+// New code should use Log.* instead of console.* directly. The wrapper
+// gives us a single seam to gate output by level (BL-008: LOG_LEVEL env)
+// and to consistently route severity:
+//   debug → quiet diagnostics, off in production
+//   info  → normal lifecycle events ("scan started", "deletion done")
+//   warn  → recoverable problems (skipped node, fallback used)
+//   error → caught exceptions, command failures
+//
+// Existing 100+ direct console calls are not migrated wholesale here —
+// they'll move over with BL-008 when level filtering lands. This commit
+// just establishes the contract.
+const Log = {
+  debug: (...args) => console.log(...args),
+  info:  (...args) => console.log(...args),
+  warn:  (...args) => console.warn(...args),
+  error: (...args) => console.error(...args),
+};
+
 
 // Helper function for progress updates
 async function sendProgressUpdate(
@@ -1000,7 +1019,7 @@ async function createText(params) {
 }
 
 async function setFillColor(params) {
-  console.log("setFillColor", params);
+  Log.debug("setFillColor", params);
   const {
     nodeId,
     color: { r, g, b, a },
