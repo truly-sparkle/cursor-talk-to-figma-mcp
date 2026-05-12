@@ -1106,6 +1106,133 @@ wrapToolHandler(
     : `Cleared dev status on "${r.name}"`,
 );
 
+// ---- Prototyping / Interactions (BL-014) --------------------------
+//
+// Wrappers for Figma's prototype reactions, page-level flow starting
+// points, frame overflow direction, and the page-level prototypeDevice.
+// `set_reaction` replaces the node's reactions array with a single
+// entry — Figma allows multiple reactions per node, but the v1 surface
+// keeps the API small. Use `clear_reactions` to remove all.
+
+const reactionTriggerSchema = z.union([
+  z.object({ type: z.enum(["ON_CLICK", "ON_HOVER", "ON_PRESS", "ON_DRAG"]) }),
+  z.object({
+    type: z.enum(["MOUSE_ENTER", "MOUSE_LEAVE", "MOUSE_UP", "MOUSE_DOWN"]),
+    delay: z.number().nonnegative().optional(),
+  }),
+  z.object({
+    type: z.literal("AFTER_TIMEOUT"),
+    timeout: z.number().nonnegative().describe("Delay in seconds"),
+  }),
+  z.object({
+    type: z.literal("ON_KEY_DOWN"),
+    device: z.enum([
+      "KEYBOARD", "XBOX_ONE", "PS4", "SWITCH_PRO", "UNKNOWN_CONTROLLER",
+    ]).optional(),
+    keyCodes: z.array(z.number().int()).describe("Key codes (KeyboardEvent.keyCode style)"),
+  }),
+]);
+
+const reactionActionSchema = z.union([
+  z.object({ type: z.literal("BACK") }),
+  z.object({ type: z.literal("CLOSE") }),
+  z.object({
+    type: z.literal("URL"),
+    url: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("NODE"),
+    destinationId: z.string().min(1),
+    navigation: z.enum(["NAVIGATE", "OVERLAY", "SWAP", "PUSH", "BACK", "CLOSE"]),
+    transition: z.any().optional().describe("Transition object (figma.NavigationTransition)"),
+    preserveScrollPosition: z.boolean().optional(),
+    overlayRelativePosition: z.any().optional(),
+    resetVideoPosition: z.boolean().optional(),
+    resetScrollPosition: z.boolean().optional(),
+    resetInteractiveComponents: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("SCROLL_TO"),
+    destinationId: z.string().min(1),
+    transition: z.any().optional(),
+  }),
+  // Passthrough for less-common action shapes (variables, conditional).
+  z.object({
+    type: z.enum(["SET_VARIABLE", "SET_VARIABLE_MODE", "CONDITIONAL"]),
+  }).passthrough(),
+]);
+
+wrapToolHandler(
+  "set_reaction",
+  "Set a single prototype reaction on a node, replacing any existing reactions array. " +
+  "Trigger forms: ON_CLICK / ON_HOVER / ON_PRESS / ON_DRAG / MOUSE_*; AFTER_TIMEOUT (timeout in seconds); ON_KEY_DOWN (keyCodes[]). " +
+  "Action forms: NODE (destinationId + navigation: NAVIGATE/OVERLAY/SWAP/PUSH/BACK/CLOSE), URL, BACK, CLOSE, SCROLL_TO. " +
+  "Use clear_reactions to remove all reactions.",
+  {
+    nodeId: z.string().describe("Node to attach the reaction to"),
+    trigger: reactionTriggerSchema,
+    action: reactionActionSchema,
+  },
+  (r: any) => `Set reaction on "${r.name}" (${r.type}): ${r.reaction.trigger.type} -> ${r.reaction.action.type}`,
+);
+
+wrapToolHandler(
+  "clear_reactions",
+  "Clear all prototype reactions on a node (sets reactions = []).",
+  { nodeId: z.string() },
+  (r: any) => `Cleared reactions on "${r.name}" (${r.type})`,
+);
+
+wrapToolHandler(
+  "set_flow_starting_point",
+  "Add (or update) a flow starting point on a page. If a starting point with the same nodeId " +
+  "already exists, its name is updated; otherwise a new entry is appended to page.flowStartingPoints. " +
+  "The node should be a top-level frame on the page for the flow to be useful in the prototype panel.",
+  {
+    pageId: z.string().describe("ID of the PAGE node owning the flow"),
+    nodeId: z.string().describe("ID of the frame that starts the flow"),
+    name: z.string().optional().describe("Display name; defaults to 'Flow <node name>'"),
+  },
+  (r: any) =>
+    `${r.replaced ? "Updated" : "Added"} flow starting point "${r.name}" on page ${r.pageId} ` +
+    `(now ${r.flowStartingPointsCount} flow(s))`,
+);
+
+wrapToolHandler(
+  "set_overflow_direction",
+  "Set a frame's prototype overflow direction (controls scroll behavior in prototypes). " +
+  "NONE | HORIZONTAL | VERTICAL | BOTH.",
+  {
+    nodeId: z.string(),
+    direction: z.enum(["NONE", "HORIZONTAL", "VERTICAL", "BOTH"]),
+  },
+  (r: any) => `Set overflowDirection on "${r.name}" to ${r.overflowDirection}`,
+);
+
+wrapToolHandler(
+  "set_prototype_device",
+  "Set figma.currentPage.prototypeDevice — the device frame used when running the prototype. " +
+  "Pass a preset shorthand (just presetIdentifier) for a quick PRESET, or supply { type, size?, presetIdentifier?, rotation? } " +
+  "for full control. type: NONE | PRESET | CUSTOM | PRESENTATION.",
+  {
+    presetIdentifier: z.string().optional().describe("Figma preset id, e.g. 'IPHONE_15_PRO'"),
+    type: z.enum(["NONE", "PRESET", "CUSTOM", "PRESENTATION"]).optional(),
+    size: z.object({
+      width: z.number().positive(),
+      height: z.number().positive(),
+    }).optional().describe("Required when type='CUSTOM'"),
+    rotation: z.enum(["NONE", "CCW_90"]).optional(),
+  },
+  (r: any) => {
+    const d = r.prototypeDevice || {};
+    const parts = [d.type || "?"];
+    if (d.presetIdentifier) parts.push(d.presetIdentifier);
+    if (d.size) parts.push(`${d.size.width}×${d.size.height}`);
+    if (d.rotation) parts.push(d.rotation);
+    return `Set prototypeDevice on page ${r.pageId}: ${parts.join(" / ")}`;
+  },
+);
+
 wrapToolHandler(
   "set_image_filters",
   "Adjust an IMAGE paint's filters: exposure, contrast, saturation, temperature, tint, highlights, shadows. " +
@@ -3650,6 +3777,11 @@ type FigmaCommand =
   | "get_reactions"
   | "set_default_connector"
   | "create_connections"
+  | "set_reaction"
+  | "clear_reactions"
+  | "set_flow_starting_point"
+  | "set_overflow_direction"
+  | "set_prototype_device"
   | "set_focus"
   | "set_selections"
   | "set_dev_resource"
@@ -3983,6 +4115,27 @@ type CommandParams = {
     nodeId: string;
     type: "READY_FOR_DEV" | "COMPLETED" | "NONE";
     description?: string;
+  };
+  set_reaction: {
+    nodeId: string;
+    trigger: { type: string; [key: string]: any };
+    action: { type: string; [key: string]: any };
+  };
+  clear_reactions: { nodeId: string };
+  set_flow_starting_point: {
+    pageId: string;
+    nodeId: string;
+    name?: string;
+  };
+  set_overflow_direction: {
+    nodeId: string;
+    direction: "NONE" | "HORIZONTAL" | "VERTICAL" | "BOTH";
+  };
+  set_prototype_device: {
+    presetIdentifier?: string;
+    type?: "NONE" | "PRESET" | "CUSTOM" | "PRESENTATION";
+    size?: { width: number; height: number };
+    rotation?: "NONE" | "CCW_90";
   };
 
 };

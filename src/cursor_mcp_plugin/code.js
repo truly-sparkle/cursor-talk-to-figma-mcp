@@ -256,6 +256,16 @@ async function handleCommand(command, params) {
       return await getDevResources(params);
     case "set_dev_status":
       return await setDevStatus(params);
+    case "set_reaction":
+      return await setReaction(params);
+    case "clear_reactions":
+      return await clearReactions(params);
+    case "set_flow_starting_point":
+      return await setFlowStartingPoint(params);
+    case "set_overflow_direction":
+      return await setOverflowDirection(params);
+    case "set_prototype_device":
+      return await setPrototypeDevice(params);
     case "set_plugin_data":
       return await setPluginData(params);
     case "get_plugin_data":
@@ -2106,6 +2116,293 @@ async function scrollAndZoomIntoView(params) {
     framedNodeCount: nodes.length,
     center: { x: v.center.x, y: v.center.y },
     zoom: v.zoom,
+  };
+}
+
+// ---- Prototyping (BL-014) ----------------------------------------
+//
+// Wraps Figma's reactions / flow-starting-points / overflow / prototype
+// device APIs. The trigger and action shapes are validated on the server
+// (Zod) — here we just normalize and assign. Plugin runtime forbids
+// `??` / `?.` / object spread, so keep helpers explicit.
+
+var REACTION_TRIGGER_TYPES = [
+  "ON_CLICK",
+  "ON_HOVER",
+  "ON_PRESS",
+  "ON_DRAG",
+  "AFTER_TIMEOUT",
+  "MOUSE_ENTER",
+  "MOUSE_LEAVE",
+  "MOUSE_UP",
+  "MOUSE_DOWN",
+  "ON_KEY_DOWN",
+];
+
+var REACTION_ACTION_TYPES = [
+  "BACK",
+  "CLOSE",
+  "URL",
+  "NODE",
+  "SCROLL_TO",
+  "SET_VARIABLE",
+  "SET_VARIABLE_MODE",
+  "CONDITIONAL",
+];
+
+var NODE_NAVIGATIONS = [
+  "NAVIGATE", "OVERLAY", "SWAP", "PUSH", "BACK", "CLOSE",
+];
+
+function normalizeTrigger(trigger) {
+  if (!trigger || typeof trigger !== "object") {
+    throw new Error("trigger must be an object with a 'type' field");
+  }
+  var type = trigger.type;
+  if (REACTION_TRIGGER_TYPES.indexOf(type) === -1) {
+    throw new Error(
+      "Unsupported trigger.type: " + String(type) +
+      ". Allowed: " + REACTION_TRIGGER_TYPES.join(", ")
+    );
+  }
+  if (type === "AFTER_TIMEOUT") {
+    var timeout = trigger.timeout;
+    if (typeof timeout !== "number" || !isFinite(timeout) || timeout < 0) {
+      throw new Error("AFTER_TIMEOUT trigger requires a non-negative numeric 'timeout' (seconds)");
+    }
+    return { type: "AFTER_TIMEOUT", timeout: timeout };
+  }
+  if (type === "ON_KEY_DOWN") {
+    var device = trigger.device == null ? "KEYBOARD" : trigger.device;
+    var keyCodes = trigger.keyCodes;
+    if (!Array.isArray(keyCodes)) {
+      throw new Error("ON_KEY_DOWN trigger requires 'keyCodes' (number[])");
+    }
+    return { type: "ON_KEY_DOWN", device: device, keyCodes: keyCodes.slice() };
+  }
+  // Plain triggers without extra fields.
+  return { type: type };
+}
+
+function normalizeAction(action) {
+  if (!action || typeof action !== "object") {
+    throw new Error("action must be an object with a 'type' field");
+  }
+  var type = action.type;
+  if (REACTION_ACTION_TYPES.indexOf(type) === -1) {
+    throw new Error(
+      "Unsupported action.type: " + String(type) +
+      ". Allowed: " + REACTION_ACTION_TYPES.join(", ")
+    );
+  }
+  if (type === "BACK" || type === "CLOSE") {
+    return { type: type };
+  }
+  if (type === "URL") {
+    if (typeof action.url !== "string" || action.url.length === 0) {
+      throw new Error("URL action requires a non-empty 'url' string");
+    }
+    return { type: "URL", url: action.url };
+  }
+  if (type === "NODE") {
+    if (typeof action.destinationId !== "string" || action.destinationId.length === 0) {
+      throw new Error("NODE action requires 'destinationId' string");
+    }
+    var nav = action.navigation;
+    if (NODE_NAVIGATIONS.indexOf(nav) === -1) {
+      throw new Error(
+        "NODE action requires 'navigation' in: " + NODE_NAVIGATIONS.join(", ")
+      );
+    }
+    var nodeAction = {
+      type: "NODE",
+      destinationId: action.destinationId,
+      navigation: nav,
+      transition: action.transition == null ? null : action.transition,
+      preserveScrollPosition: action.preserveScrollPosition === true,
+    };
+    if (action.overlayRelativePosition != null) {
+      nodeAction.overlayRelativePosition = action.overlayRelativePosition;
+    }
+    if (action.resetVideoPosition != null) {
+      nodeAction.resetVideoPosition = action.resetVideoPosition === true;
+    }
+    if (action.resetScrollPosition != null) {
+      nodeAction.resetScrollPosition = action.resetScrollPosition === true;
+    }
+    if (action.resetInteractiveComponents != null) {
+      nodeAction.resetInteractiveComponents = action.resetInteractiveComponents === true;
+    }
+    return nodeAction;
+  }
+  if (type === "SCROLL_TO") {
+    if (typeof action.destinationId !== "string" || action.destinationId.length === 0) {
+      throw new Error("SCROLL_TO action requires 'destinationId' string");
+    }
+    return {
+      type: "SCROLL_TO",
+      destinationId: action.destinationId,
+      transition: action.transition == null ? null : action.transition,
+    };
+  }
+  // SET_VARIABLE / SET_VARIABLE_MODE / CONDITIONAL — passthrough; caller
+  // is responsible for matching Figma's expected shape exactly.
+  return action;
+}
+
+async function setReaction(params) {
+  if (!params || typeof params.nodeId !== "string") {
+    throw new Error("Missing nodeId parameter");
+  }
+  var node = await figma.getNodeByIdAsync(params.nodeId);
+  if (!node) {
+    throw new Error("Node not found: " + params.nodeId);
+  }
+  if (!("reactions" in node)) {
+    throw new Error("Node type " + node.type + " does not support reactions");
+  }
+  var trigger = normalizeTrigger(params.trigger);
+  var action = normalizeAction(params.action);
+  var reaction = { trigger: trigger, action: action };
+
+  // Some node types expose async setter; prefer it when present.
+  if (typeof node.setReactionsAsync === "function") {
+    await node.setReactionsAsync([reaction]);
+  } else {
+    node.reactions = [reaction];
+  }
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    reactionsCount: 1,
+    reaction: reaction,
+  };
+}
+
+async function clearReactions(params) {
+  if (!params || typeof params.nodeId !== "string") {
+    throw new Error("Missing nodeId parameter");
+  }
+  var node = await figma.getNodeByIdAsync(params.nodeId);
+  if (!node) {
+    throw new Error("Node not found: " + params.nodeId);
+  }
+  if (!("reactions" in node)) {
+    throw new Error("Node type " + node.type + " does not support reactions");
+  }
+  if (typeof node.setReactionsAsync === "function") {
+    await node.setReactionsAsync([]);
+  } else {
+    node.reactions = [];
+  }
+  return { id: node.id, name: node.name, type: node.type, reactionsCount: 0 };
+}
+
+async function setFlowStartingPoint(params) {
+  if (!params || typeof params.pageId !== "string") {
+    throw new Error("Missing pageId parameter");
+  }
+  if (typeof params.nodeId !== "string") {
+    throw new Error("Missing nodeId parameter");
+  }
+  var page = await figma.getNodeByIdAsync(params.pageId);
+  if (!page) {
+    throw new Error("Page not found: " + params.pageId);
+  }
+  if (page.type !== "PAGE") {
+    throw new Error("pageId must reference a PAGE node, got: " + page.type);
+  }
+  var node = await figma.getNodeByIdAsync(params.nodeId);
+  if (!node) {
+    throw new Error("Node not found: " + params.nodeId);
+  }
+  // Flow starting points must live on top-level frames.
+  var name = typeof params.name === "string" && params.name.length > 0
+    ? params.name
+    : "Flow " + (node.name || node.id);
+
+  var existing = Array.isArray(page.flowStartingPoints)
+    ? page.flowStartingPoints.slice()
+    : [];
+  var nextPoints = [];
+  var replaced = false;
+  for (var i = 0; i < existing.length; i++) {
+    var fp = existing[i];
+    if (fp && fp.nodeId === params.nodeId) {
+      nextPoints.push({ nodeId: params.nodeId, name: name });
+      replaced = true;
+    } else {
+      nextPoints.push(fp);
+    }
+  }
+  if (!replaced) {
+    nextPoints.push({ nodeId: params.nodeId, name: name });
+  }
+  page.flowStartingPoints = nextPoints;
+  return {
+    pageId: page.id,
+    nodeId: params.nodeId,
+    name: name,
+    replaced: replaced,
+    flowStartingPointsCount: nextPoints.length,
+  };
+}
+
+var OVERFLOW_DIRECTIONS = ["NONE", "HORIZONTAL", "VERTICAL", "BOTH"];
+
+async function setOverflowDirection(params) {
+  if (!params || typeof params.nodeId !== "string") {
+    throw new Error("Missing nodeId parameter");
+  }
+  var direction = params.direction;
+  if (OVERFLOW_DIRECTIONS.indexOf(direction) === -1) {
+    throw new Error(
+      "direction must be one of: " + OVERFLOW_DIRECTIONS.join(", ")
+    );
+  }
+  var node = await figma.getNodeByIdAsync(params.nodeId);
+  if (!node) {
+    throw new Error("Node not found: " + params.nodeId);
+  }
+  if (!("overflowDirection" in node)) {
+    throw new Error("Node type " + node.type + " does not support overflowDirection");
+  }
+  node.overflowDirection = direction;
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    overflowDirection: node.overflowDirection,
+  };
+}
+
+var PROTOTYPE_DEVICE_TYPES = ["NONE", "PRESET", "CUSTOM", "PRESENTATION"];
+
+async function setPrototypeDevice(params) {
+  var p = params || {};
+  var device;
+  if (p.presetIdentifier && !p.type) {
+    // Shorthand: just a preset identifier.
+    device = { type: "PRESET", presetIdentifier: p.presetIdentifier };
+    if (p.rotation) device.rotation = p.rotation;
+  } else {
+    var type = p.type;
+    if (PROTOTYPE_DEVICE_TYPES.indexOf(type) === -1) {
+      throw new Error(
+        "type must be one of: " + PROTOTYPE_DEVICE_TYPES.join(", ")
+      );
+    }
+    device = { type: type };
+    if (p.presetIdentifier) device.presetIdentifier = p.presetIdentifier;
+    if (p.size) device.size = p.size;
+    if (p.rotation) device.rotation = p.rotation;
+  }
+  figma.currentPage.prototypeDevice = device;
+  var current = figma.currentPage.prototypeDevice;
+  return {
+    pageId: figma.currentPage.id,
+    prototypeDevice: current,
   };
 }
 
