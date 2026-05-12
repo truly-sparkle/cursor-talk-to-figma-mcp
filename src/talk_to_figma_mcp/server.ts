@@ -1277,6 +1277,103 @@ wrapToolHandler(
   (r: any) => `Set constraints on "${r.name}": ${JSON.stringify(r.constraints)}`,
 );
 
+// ---- Node creation expansion (BL-011) -----------------------------
+
+const placement = {
+  x: z.number().optional(),
+  y: z.number().optional(),
+  parentId: z.string().optional(),
+  name: z.string().optional(),
+};
+const sized = {
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+};
+
+wrapToolHandler(
+  "create_ellipse",
+  "Create an ELLIPSE node. width/height optional (Figma default 100×100).",
+  { ...placement, ...sized },
+  (r: any) => `Created ellipse "${r.id}" at (${r.x}, ${r.y})`,
+);
+
+wrapToolHandler(
+  "create_line",
+  "Create a LINE from (x1,y1) to (x2,y2). Length+rotation derived from endpoints; node is anchored at start. Optional strokeColor (RGBA 0-1) and strokeWeight.",
+  {
+    x1: z.number(), y1: z.number(), x2: z.number(), y2: z.number(),
+    name: z.string().optional(),
+    parentId: z.string().optional(),
+    strokeColor: z.object({
+      r: z.number().min(0).max(1),
+      g: z.number().min(0).max(1),
+      b: z.number().min(0).max(1),
+      a: z.number().min(0).max(1).optional(),
+    }).optional(),
+    strokeWeight: z.number().positive().optional(),
+  },
+  (r: any) => `Created line "${r.id}" length ${r.length.toFixed(1)} rot ${r.rotation.toFixed(1)}°`,
+);
+
+wrapToolHandler(
+  "create_polygon",
+  "Create a POLYGON. pointCount default 3 (must be ≥3).",
+  { ...placement, ...sized, pointCount: z.number().int().min(3).optional() },
+  (r: any) => `Created polygon "${r.id}" (${r.pointCount} sides)`,
+);
+
+wrapToolHandler(
+  "create_star",
+  "Create a STAR. pointCount default 5 (must be ≥3). innerRadius is the star ratio 0..1 (smaller = pointier).",
+  {
+    ...placement, ...sized,
+    pointCount: z.number().int().min(3).optional(),
+    innerRadius: z.number().min(0).max(1).optional(),
+  },
+  (r: any) => `Created star "${r.id}" (${r.pointCount} points, inner ${r.innerRadius})`,
+);
+
+wrapToolHandler(
+  "create_vector",
+  "Create a VECTOR from one or more SVG path strings. " +
+  "paths: [{ data: 'M ... Z', windingRule?: 'NONZERO' | 'EVENODD' }]. " +
+  "Use this for arbitrary shapes you can't compose from rect/ellipse/polygon.",
+  {
+    ...placement,
+    paths: z.array(z.object({
+      data: z.string().min(1),
+      windingRule: z.enum(["NONZERO", "EVENODD"]).optional(),
+    })).min(1),
+  },
+  (r: any) => `Created vector "${r.id}" with ${r.pathCount} path(s)`,
+);
+
+wrapToolHandler(
+  "create_section",
+  "Create a SECTION (canvas-level grouping container, not a Frame).",
+  { ...placement, ...sized },
+  (r: any) => `Created section "${r.id}" at (${r.x}, ${r.y})`,
+);
+
+wrapToolHandler(
+  "create_component",
+  "Create an empty COMPONENT (vs create_component_from_node which promotes an existing node).",
+  { ...placement, ...sized },
+  (r: any) => `Created empty component "${r.id}" (key: ${r.key})`,
+);
+
+wrapToolHandler(
+  "combine_as_variants",
+  "Wrap existing components as a Component Set (figma.combineAsVariants). " +
+  "Lower-level than create_component_set (BL-056) — same call but keep BL-056's nicer ergonomics for typical use.",
+  {
+    componentIds: z.array(z.string()).min(1),
+    parentId: z.string().optional(),
+    name: z.string().optional(),
+  },
+  (r: any) => `Combined ${r.variantCount} variants into "${r.id}"`,
+);
+
 // ---- Page management (BL-012) -------------------------------------
 
 wrapToolHandler(
@@ -3967,6 +4064,14 @@ type FigmaCommand =
   | "rename_page"
   | "set_current_page"
   | "reorder_pages"
+  | "create_ellipse"
+  | "create_line"
+  | "create_polygon"
+  | "create_star"
+  | "create_vector"
+  | "create_section"
+  | "create_component"
+  | "combine_as_variants"
   | "get_reactions"
   | "set_default_connector"
   | "create_connections"

@@ -429,6 +429,22 @@ async function handleCommand(command, params) {
       return await setCurrentPage(params);
     case "reorder_pages":
       return await reorderPages(params);
+    case "create_ellipse":
+      return await createEllipse(params);
+    case "create_line":
+      return await createLine(params);
+    case "create_polygon":
+      return await createPolygon(params);
+    case "create_star":
+      return await createStar(params);
+    case "create_vector":
+      return await createVector(params);
+    case "create_section":
+      return await createSection(params);
+    case "create_component":
+      return await createEmptyComponent(params);
+    case "combine_as_variants":
+      return await combineAsVariantsTool(params);
     case "get_reactions":
       if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
         throw new Error("Missing or invalid nodeIds parameter");
@@ -6575,4 +6591,181 @@ async function reorderPages(params) {
       return { id: c.id, name: c.name, index: i };
     }),
   };
+}
+
+// ---- Node creation expansion (BL-011) -----------------------------
+
+async function placeAtSimple(node, x, y, parentId) {
+  if (typeof x === "number") node.x = x;
+  if (typeof y === "number") node.y = y;
+  if (parentId) {
+    const parent = await figma.getNodeByIdAsync(parentId);
+    if (!parent) throw new Error("Parent not found: " + parentId);
+    if (typeof parent.appendChild !== "function") {
+      throw new Error("Target is not a container: " + parentId);
+    }
+    parent.appendChild(node);
+  }
+}
+
+function ensureSize(node, w, h) {
+  if (typeof w === "number" && typeof h === "number") {
+    if (w <= 0 || h <= 0) throw new Error("width/height must be positive");
+    node.resize(w, h);
+  }
+}
+
+async function createEllipse(params) {
+  const p = params || {};
+  const node = figma.createEllipse();
+  if (p.name) node.name = p.name;
+  ensureSize(node, p.width, p.height);
+  await placeAtSimple(node, p.x, p.y, p.parentId);
+  return { id: node.id, name: node.name, type: node.type, x: node.x, y: node.y };
+}
+
+async function createLine(params) {
+  const p = params || {};
+  if (typeof p.x1 !== "number" || typeof p.y1 !== "number" || typeof p.x2 !== "number" || typeof p.y2 !== "number") {
+    throw new Error("createLine requires numeric x1, y1, x2, y2");
+  }
+  const node = figma.createLine();
+  if (p.name) node.name = p.name;
+  // Length + rotation derived from endpoints. Figma's LineNode is a
+  // horizontal segment of `width` px with rotation in degrees.
+  const dx = p.x2 - p.x1;
+  const dy = p.y2 - p.y1;
+  const length = Math.sqrt(dx * dx + dy * dy);
+  node.resize(length, 0);
+  // Rotation in degrees, CCW; atan2 returns CCW radians from +X.
+  const rad = Math.atan2(dy, dx);
+  node.rotation = rad * (180 / Math.PI);
+  // Anchor at start point.
+  node.x = p.x1;
+  node.y = p.y1;
+  if (p.parentId) {
+    const parent = await figma.getNodeByIdAsync(p.parentId);
+    if (!parent) throw new Error("Parent not found: " + p.parentId);
+    parent.appendChild(node);
+  }
+  if (p.strokeColor && typeof p.strokeColor === "object") {
+    const c = p.strokeColor;
+    node.strokes = [{
+      type: "SOLID",
+      color: {
+        r: Math.max(0, Math.min(1, Number(c.r) || 0)),
+        g: Math.max(0, Math.min(1, Number(c.g) || 0)),
+        b: Math.max(0, Math.min(1, Number(c.b) || 0)),
+      },
+      opacity: c.a == null ? 1 : Math.max(0, Math.min(1, Number(c.a))),
+    }];
+  }
+  if (typeof p.strokeWeight === "number") node.strokeWeight = p.strokeWeight;
+  return { id: node.id, name: node.name, type: node.type, x: node.x, y: node.y, length: length, rotation: node.rotation };
+}
+
+async function createPolygon(params) {
+  const p = params || {};
+  const node = figma.createPolygon();
+  if (p.name) node.name = p.name;
+  if (typeof p.pointCount === "number") {
+    if (p.pointCount < 3) throw new Error("polygon pointCount must be >= 3");
+    node.pointCount = p.pointCount;
+  }
+  ensureSize(node, p.width, p.height);
+  await placeAtSimple(node, p.x, p.y, p.parentId);
+  return { id: node.id, name: node.name, type: node.type, pointCount: node.pointCount };
+}
+
+async function createStar(params) {
+  const p = params || {};
+  const node = figma.createStar();
+  if (p.name) node.name = p.name;
+  if (typeof p.pointCount === "number") {
+    if (p.pointCount < 3) throw new Error("star pointCount must be >= 3");
+    node.pointCount = p.pointCount;
+  }
+  if (typeof p.innerRadius === "number") {
+    if (p.innerRadius < 0 || p.innerRadius > 1) {
+      throw new Error("innerRadius must be 0..1");
+    }
+    node.innerRadius = p.innerRadius;
+  }
+  ensureSize(node, p.width, p.height);
+  await placeAtSimple(node, p.x, p.y, p.parentId);
+  return { id: node.id, name: node.name, type: node.type, pointCount: node.pointCount, innerRadius: node.innerRadius };
+}
+
+async function createVector(params) {
+  const p = params || {};
+  if (!Array.isArray(p.paths) || p.paths.length === 0) {
+    throw new Error("paths must be a non-empty array of { data, windingRule? }");
+  }
+  const vectorPaths = [];
+  for (let i = 0; i < p.paths.length; i++) {
+    const path = p.paths[i];
+    if (!path || typeof path.data !== "string" || path.data.length === 0) {
+      throw new Error("paths[" + i + "].data must be a non-empty SVG path string");
+    }
+    const winding = path.windingRule;
+    if (winding != null && winding !== "NONZERO" && winding !== "EVENODD") {
+      throw new Error("windingRule must be 'NONZERO' or 'EVENODD'");
+    }
+    vectorPaths.push({
+      windingRule: winding == null ? "NONZERO" : winding,
+      data: path.data,
+    });
+  }
+  const node = figma.createVector();
+  if (p.name) node.name = p.name;
+  node.vectorPaths = vectorPaths;
+  await placeAtSimple(node, p.x, p.y, p.parentId);
+  return { id: node.id, name: node.name, type: node.type, pathCount: vectorPaths.length };
+}
+
+async function createSection(params) {
+  const p = params || {};
+  if (typeof figma.createSection !== "function") {
+    throw new Error("figma.createSection is not available in this runtime");
+  }
+  const node = figma.createSection();
+  if (p.name) node.name = p.name;
+  ensureSize(node, p.width, p.height);
+  await placeAtSimple(node, p.x, p.y, p.parentId);
+  return { id: node.id, name: node.name, type: node.type, x: node.x, y: node.y };
+}
+
+async function createEmptyComponent(params) {
+  const p = params || {};
+  const node = figma.createComponent();
+  if (p.name) node.name = p.name;
+  ensureSize(node, p.width, p.height);
+  await placeAtSimple(node, p.x, p.y, p.parentId);
+  return { id: node.id, name: node.name, type: node.type, key: node.key };
+}
+
+async function combineAsVariantsTool(params) {
+  const p = params || {};
+  if (!Array.isArray(p.componentIds) || p.componentIds.length === 0) {
+    throw new Error("componentIds must be a non-empty array");
+  }
+  const components = [];
+  for (let i = 0; i < p.componentIds.length; i++) {
+    const c = await figma.getNodeByIdAsync(p.componentIds[i]);
+    if (!c) throw new Error("Component not found: " + p.componentIds[i]);
+    if (c.type !== "COMPONENT") {
+      throw new Error("Not a COMPONENT: " + p.componentIds[i] + " (" + c.type + ")");
+    }
+    components.push(c);
+  }
+  let parent = null;
+  if (p.parentId) {
+    parent = await figma.getNodeByIdAsync(p.parentId);
+    if (!parent) throw new Error("Parent not found: " + p.parentId);
+  } else {
+    parent = components[0].parent || figma.currentPage;
+  }
+  const set = figma.combineAsVariants(components, parent);
+  if (p.name && typeof p.name === "string") set.name = p.name;
+  return { id: set.id, name: set.name, type: set.type, variantCount: components.length };
 }
