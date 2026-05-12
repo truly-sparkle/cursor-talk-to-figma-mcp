@@ -417,6 +417,18 @@ async function handleCommand(command, params) {
       return await setLayoutGrow(params);
     case "set_counter_axis_spacing":
       return await setCounterAxisSpacing(params);
+    case "get_pages":
+      return await getPages(params);
+    case "create_page":
+      return await createPage(params);
+    case "delete_page":
+      return await deletePage(params);
+    case "rename_page":
+      return await renamePage(params);
+    case "set_current_page":
+      return await setCurrentPage(params);
+    case "reorder_pages":
+      return await reorderPages(params);
     case "get_reactions":
       if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
         throw new Error("Missing or invalid nodeIds parameter");
@@ -6469,4 +6481,98 @@ async function setCounterAxisSpacing(params) {
   }
   node.counterAxisSpacing = p.spacing;
   return { id: node.id, name: node.name, counterAxisSpacing: node.counterAxisSpacing };
+}
+
+// ---- Page management (BL-012) -------------------------------------
+
+async function getPages(_params) {
+  const pages = figma.root.children;
+  const currentId = figma.currentPage.id;
+  const list = [];
+  for (let i = 0; i < pages.length; i++) {
+    const p = pages[i];
+    list.push({
+      id: p.id,
+      name: p.name,
+      childCount: p.children.length,
+      isCurrent: p.id === currentId,
+      index: i,
+    });
+  }
+  return { count: list.length, currentPageId: currentId, pages: list };
+}
+
+async function createPage(params) {
+  const p = params || {};
+  if (!p.name || typeof p.name !== "string") throw new Error("Missing name");
+  const page = figma.createPage();
+  page.name = p.name;
+  if (typeof p.index === "number") {
+    const total = figma.root.children.length;
+    const idx = Math.max(0, Math.min(p.index, total - 1));
+    figma.root.insertChild(idx, page);
+  }
+  return { id: page.id, name: page.name, index: figma.root.children.indexOf(page) };
+}
+
+async function deletePage(params) {
+  const p = params || {};
+  if (!p.pageId) throw new Error("Missing pageId");
+  if (figma.root.children.length <= 1) {
+    throw new Error("Cannot delete the last remaining page");
+  }
+  const page = await figma.getNodeByIdAsync(p.pageId);
+  if (!page) throw new Error("Page not found: " + p.pageId);
+  if (page.type !== "PAGE") throw new Error("Not a page: " + page.type);
+  if (page.id === figma.currentPage.id) {
+    // Switch away first; Figma rejects deleting the current page.
+    const others = figma.root.children.filter(function (c) { return c.id !== page.id; });
+    await figma.setCurrentPageAsync(others[0]);
+  }
+  page.remove();
+  return { deletedId: p.pageId, remaining: figma.root.children.length };
+}
+
+async function renamePage(params) {
+  const p = params || {};
+  if (!p.pageId) throw new Error("Missing pageId");
+  if (!p.name || typeof p.name !== "string") throw new Error("Missing name");
+  const page = await figma.getNodeByIdAsync(p.pageId);
+  if (!page) throw new Error("Page not found: " + p.pageId);
+  if (page.type !== "PAGE") throw new Error("Not a page: " + page.type);
+  page.name = p.name;
+  return { id: page.id, name: page.name };
+}
+
+async function setCurrentPage(params) {
+  const p = params || {};
+  if (!p.pageId) throw new Error("Missing pageId");
+  const page = await figma.getNodeByIdAsync(p.pageId);
+  if (!page) throw new Error("Page not found: " + p.pageId);
+  if (page.type !== "PAGE") throw new Error("Not a page: " + page.type);
+  await figma.setCurrentPageAsync(page);
+  return { currentPageId: figma.currentPage.id, name: figma.currentPage.name };
+}
+
+async function reorderPages(params) {
+  const p = params || {};
+  if (!Array.isArray(p.orderedIds) || p.orderedIds.length === 0) {
+    throw new Error("orderedIds must be a non-empty array");
+  }
+  // Validate all ids exist + are PageNodes before mutating.
+  const pages = [];
+  for (let i = 0; i < p.orderedIds.length; i++) {
+    const node = await figma.getNodeByIdAsync(p.orderedIds[i]);
+    if (!node) throw new Error("Page not found: " + p.orderedIds[i]);
+    if (node.type !== "PAGE") throw new Error("Not a page: " + p.orderedIds[i]);
+    pages.push(node);
+  }
+  for (let i = 0; i < pages.length; i++) {
+    figma.root.insertChild(i, pages[i]);
+  }
+  return {
+    pages: figma.root.children.map(function (c, i) {
+      return { id: c.id, name: c.name, index: i };
+    }),
+  };
 }

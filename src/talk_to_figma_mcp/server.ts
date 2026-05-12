@@ -1277,6 +1277,50 @@ wrapToolHandler(
   (r: any) => `Set constraints on "${r.name}": ${JSON.stringify(r.constraints)}`,
 );
 
+// ---- Page management (BL-012) -------------------------------------
+
+wrapToolHandler(
+  "get_pages",
+  "List all pages in the current document. Returns id/name/childCount/isCurrent/index.",
+  {},
+  (r: any) => `${r.count} page(s); current=${r.currentPageId}`,
+);
+
+wrapToolHandler(
+  "create_page",
+  "Create a new page. If `index` is given, insert there; otherwise append at end.",
+  { name: z.string().min(1), index: z.number().int().nonnegative().optional() },
+  (r: any) => `Created page "${r.name}" at index ${r.index} (id: ${r.id})`,
+);
+
+wrapToolHandler(
+  "delete_page",
+  "Delete a page. Refuses to delete the last remaining page. If deleting the current page, switches to another first.",
+  { pageId: z.string() },
+  (r: any) => `Deleted page ${r.deletedId} (${r.remaining} remaining)`,
+);
+
+wrapToolHandler(
+  "rename_page",
+  "Rename a page.",
+  { pageId: z.string(), name: z.string().min(1) },
+  (r: any) => `Renamed page ${r.id} → "${r.name}"`,
+);
+
+wrapToolHandler(
+  "set_current_page",
+  "Switch the active page (figma.setCurrentPageAsync). Required for dynamic-page documentAccess mode.",
+  { pageId: z.string() },
+  (r: any) => `Current page: "${r.name}" (${r.currentPageId})`,
+);
+
+wrapToolHandler(
+  "reorder_pages",
+  "Reorder pages on the document. orderedIds must list the new order; all referenced ids must be existing PAGE nodes (omitted pages keep their relative position at the end).",
+  { orderedIds: z.array(z.string()).min(1) },
+  (r: any) => `Reordered to ${r.pages.length} pages`,
+);
+
 // ---- Auto-layout advanced (BL-021) --------------------------------
 
 wrapToolHandler(
@@ -3917,6 +3961,12 @@ type FigmaCommand =
   | "set_layout_align"
   | "set_layout_grow"
   | "set_counter_axis_spacing"
+  | "get_pages"
+  | "create_page"
+  | "delete_page"
+  | "rename_page"
+  | "set_current_page"
+  | "reorder_pages"
   | "get_reactions"
   | "set_default_connector"
   | "create_connections"
