@@ -6,23 +6,45 @@ const state = {
   serverPort: 3055, // Default port
 };
 
-// ---- Logger (BL-038) ----------------------------------------------
+// ---- Logger (BL-038, BL-008) --------------------------------------
 // New code should use Log.* instead of console.* directly. The wrapper
-// gives us a single seam to gate output by level (BL-008: LOG_LEVEL env)
-// and to consistently route severity:
+// gives us a single seam to gate output by level and to consistently
+// route severity:
 //   debug → quiet diagnostics, off in production
 //   info  → normal lifecycle events ("scan started", "deletion done")
 //   warn  → recoverable problems (skipped node, fallback used)
 //   error → caught exceptions, command failures
 //
-// Existing 100+ direct console calls are not migrated wholesale here —
-// they'll move over with BL-008 when level filtering lands. This commit
-// just establishes the contract.
+// Level threshold: stored in figma.clientStorage at "LOG_LEVEL". Default
+// "info" (debug muted). Change at runtime via figma.clientStorage in the
+// plugin's console, or by editing settings.
+//
+// Existing 100+ direct console calls are not migrated wholesale; they
+// keep firing through console.* and aren't gated. New code goes through
+// Log.* so at least the noisy paths can be quieted incrementally.
+var LOG_LEVELS = { debug: 10, info: 20, warn: 30, error: 40, silent: 99 };
+var currentLogLevel = LOG_LEVELS.info;
+
+(async function initLogLevel() {
+  try {
+    var stored = await figma.clientStorage.getAsync("LOG_LEVEL");
+    if (stored && LOG_LEVELS[stored] != null) currentLogLevel = LOG_LEVELS[stored];
+  } catch (e) {
+    // ignore
+  }
+})();
+
 const Log = {
-  debug: (...args) => console.log(...args),
-  info:  (...args) => console.log(...args),
-  warn:  (...args) => console.warn(...args),
-  error: (...args) => console.error(...args),
+  setLevel: function (lvl) {
+    if (LOG_LEVELS[lvl] == null) return false;
+    currentLogLevel = LOG_LEVELS[lvl];
+    figma.clientStorage.setAsync("LOG_LEVEL", lvl).catch(function () {});
+    return true;
+  },
+  debug: function () { if (currentLogLevel <= 10) console.log.apply(console, arguments); },
+  info:  function () { if (currentLogLevel <= 20) console.log.apply(console, arguments); },
+  warn:  function () { if (currentLogLevel <= 30) console.warn.apply(console, arguments); },
+  error: function () { if (currentLogLevel <= 40) console.error.apply(console, arguments); },
 };
 
 

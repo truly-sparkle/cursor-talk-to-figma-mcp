@@ -2,6 +2,22 @@
 
 import { Server, ServerWebSocket } from "bun";
 
+// ---- Logger (BL-008) ----------------------------------------------
+// LOG_LEVEL env: debug | info | warn | error | silent. Default "info".
+// debug enables the verbose JSON.stringify dumps that used to flood
+// stdout on every message.
+const LOG_LEVELS: Record<string, number> = {
+  debug: 10, info: 20, warn: 30, error: 40, silent: 99,
+};
+const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
+const currentLogLevel = LOG_LEVELS[LOG_LEVEL] ?? LOG_LEVELS.info;
+const log = {
+  debug: (...a: unknown[]) => { if (currentLogLevel <= 10) console.log(...a); },
+  info:  (...a: unknown[]) => { if (currentLogLevel <= 20) console.log(...a); },
+  warn:  (...a: unknown[]) => { if (currentLogLevel <= 30) console.warn(...a); },
+  error: (...a: unknown[]) => { if (currentLogLevel <= 40) console.error(...a); },
+};
+
 // Store clients by channel
 const channels = new Map<string, Set<ServerWebSocket<any>>>();
 
@@ -121,14 +137,15 @@ const server = Bun.serve({
         // browsers that send TextEncoder-encoded payloads.
         const text = typeof message === "string" ? message : message.toString("utf8");
         const data = JSON.parse(text);
-        console.log(`\n=== Received message from client ===`);
-        console.log(`Type: ${data.type}, Channel: ${data.channel || 'N/A'}`);
+        // Compact one-liner at info; full dump only at debug (BL-008).
         if (data.message?.command) {
-          console.log(`Command: ${data.message.command}, ID: ${data.id}`);
+          log.info(`recv ${data.type} ch=${data.channel || "-"} cmd=${data.message.command} id=${data.id}`);
         } else if (data.message?.result) {
-          console.log(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
+          log.info(`recv ${data.type} ch=${data.channel || "-"} response id=${data.id} hasResult=${!!data.message.result}`);
+        } else {
+          log.info(`recv ${data.type} ch=${data.channel || "-"}`);
         }
-        console.log(`Full message:`, JSON.stringify(data, null, 2));
+        log.debug(`Full message:`, JSON.stringify(data, null, 2));
 
         if (data.type === "join") {
           const channelName = data.channel;
@@ -213,8 +230,7 @@ const server = Bun.serve({
                 sender: "peer",
                 channel: channelName
               };
-              console.log(`\n=== Broadcasting to peer #${broadcastCount} ===`);
-              console.log(JSON.stringify(broadcastMessage, null, 2));
+              log.debug(`Broadcasting to peer #${broadcastCount}:`, JSON.stringify(broadcastMessage, null, 2));
               client.send(JSON.stringify(broadcastMessage));
             }
           });
