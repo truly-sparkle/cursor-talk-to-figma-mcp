@@ -250,6 +250,12 @@ async function handleCommand(command, params) {
       return await setViewportCenter(params);
     case "scroll_and_zoom_into_view":
       return await scrollAndZoomIntoView(params);
+    case "set_dev_resource":
+      return await setDevResource(params);
+    case "get_dev_resources":
+      return await getDevResources(params);
+    case "set_dev_status":
+      return await setDevStatus(params);
     case "set_plugin_data":
       return await setPluginData(params);
     case "get_plugin_data":
@@ -5669,5 +5675,136 @@ async function setSelections(params) {
     selectedNodes: selectedNodes,
     notFoundIds: notFoundIds,
     message: `Selected ${nodes.length} nodes${notFoundIds.length > 0 ? ` (${notFoundIds.length} not found)` : ''}`
+  };
+}
+
+// ---- Dev Mode (BL-034) --------------------------------------------
+//
+// Wraps `node.addDevResourceAsync`, `node.devResources`, and
+// `node.devStatus`. These APIs live on FrameNode-like containers
+// (FRAME, COMPONENT, COMPONENT_SET, INSTANCE, SECTION). Calls on
+// unsupported nodes throw a clear "does not support" error so the
+// MCP client doesn't get a confusing TypeError from the plugin host.
+
+var DEV_STATUS_TYPES = ["READY_FOR_DEV", "COMPLETED", "NONE"];
+
+async function setDevResource(params) {
+  const p = params || {};
+  const nodeId = p.nodeId;
+  const name = p.name;
+  const url = p.url;
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (typeof name !== "string" || name.length === 0) {
+    throw new Error("Missing name");
+  }
+  if (typeof url !== "string" || url.length === 0) {
+    throw new Error("Missing url");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (typeof node.addDevResourceAsync !== "function") {
+    throw new Error("Node does not support dev resources: " + node.type);
+  }
+
+  // Figma dedupes by URL — calling addDevResourceAsync with an
+  // existing URL returns the existing resource rather than throwing,
+  // so the operation is idempotent for repeat calls. Some plugin host
+  // versions return `undefined` on dedup; fall back to scanning the
+  // node.devResources list to recover the matching entry.
+  let resource = await node.addDevResourceAsync(url, name);
+  if (!resource) {
+    const list = node.devResources || [];
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] && list[i].url === url) {
+        resource = list[i];
+        break;
+      }
+    }
+  }
+
+  const resourceId = resource && resource.id ? resource.id : null;
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    resourceId: resourceId,
+    resource: resource
+      ? { id: resource.id, name: resource.name, url: resource.url }
+      : { name: name, url: url },
+  };
+}
+
+async function getDevResources(params) {
+  const p = params || {};
+  const nodeId = p.nodeId;
+  if (!nodeId) throw new Error("Missing nodeId");
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!("devResources" in node)) {
+    throw new Error("Node does not support dev resources: " + node.type);
+  }
+
+  const list = node.devResources || [];
+  const resources = [];
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i];
+    if (!r) continue;
+    resources.push({
+      id: r.id,
+      name: r.name,
+      url: r.url,
+    });
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    resources: resources,
+  };
+}
+
+async function setDevStatus(params) {
+  const p = params || {};
+  const nodeId = p.nodeId;
+  const type = p.type;
+  const description = p.description;
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (DEV_STATUS_TYPES.indexOf(type) === -1) {
+    throw new Error(
+      "type must be one of: " + DEV_STATUS_TYPES.join(", ")
+    );
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!("devStatus" in node)) {
+    throw new Error("Node does not support devStatus: " + node.type);
+  }
+
+  if (type === "NONE") {
+    // Figma's API uses null to clear devStatus.
+    node.devStatus = null;
+  } else {
+    const status = { type: type };
+    if (typeof description === "string") {
+      status.description = description;
+    }
+    node.devStatus = status;
+  }
+
+  const current = node.devStatus;
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    devStatus: current
+      ? {
+          type: current.type,
+          description: current.description == null ? "" : current.description,
+        }
+      : null,
   };
 }

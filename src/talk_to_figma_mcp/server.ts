@@ -1064,6 +1064,48 @@ wrapToolHandler(
   (r: any) => `Framed ${r.framedNodeCount} node(s); center (${r.center.x}, ${r.center.y}), zoom ${r.zoom}`,
 );
 
+// ---- Dev Mode / Code Connect (BL-034) ------------------------------
+//
+// Attach Dev-Mode resources (GitHub/Storybook URLs etc.) and Dev status
+// (READY_FOR_DEV / COMPLETED / NONE) to FrameNode-like containers
+// (FRAME, COMPONENT, COMPONENT_SET, INSTANCE, SECTION). Calls on
+// unsupported nodes return a clear "does not support" error.
+
+wrapToolHandler(
+  "set_dev_resource",
+  "Add a Dev-Mode resource link (URL + label) to a node via node.addDevResourceAsync. " +
+  "Idempotent: Figma dedupes by URL — adding the same URL twice returns the existing resource.",
+  {
+    nodeId: z.string(),
+    name: z.string().min(1).describe("Display label (e.g. 'Storybook')"),
+    url: z.string().min(1).describe("Resource URL"),
+  },
+  (r: any) => `Set dev resource on "${r.name}" (${r.type})${r.resourceId ? ` → ${r.resourceId}` : ""}`,
+);
+
+wrapToolHandler(
+  "get_dev_resources",
+  "List Dev-Mode resources attached to a node (node.devResources). Returns array of { id, name, url }.",
+  {
+    nodeId: z.string(),
+  },
+  (r: any) => `${r.resources.length} dev resource(s) on "${r.name}"`,
+);
+
+wrapToolHandler(
+  "set_dev_status",
+  "Set a node's Dev-Mode status: READY_FOR_DEV, COMPLETED, or NONE (clears it). " +
+  "Optional description shows next to the status badge.",
+  {
+    nodeId: z.string(),
+    type: z.enum(["READY_FOR_DEV", "COMPLETED", "NONE"]),
+    description: z.string().optional(),
+  },
+  (r: any) => r.devStatus
+    ? `Dev status on "${r.name}": ${r.devStatus.type}${r.devStatus.description ? ` — ${r.devStatus.description}` : ""}`
+    : `Cleared dev status on "${r.name}"`,
+);
+
 wrapToolHandler(
   "set_image_filters",
   "Adjust an IMAGE paint's filters: exposure, contrast, saturation, temperature, tint, highlights, shadows. " +
@@ -3609,7 +3651,10 @@ type FigmaCommand =
   | "set_default_connector"
   | "create_connections"
   | "set_focus"
-  | "set_selections";
+  | "set_selections"
+  | "set_dev_resource"
+  | "get_dev_resources"
+  | "set_dev_status";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -3925,6 +3970,19 @@ type CommandParams = {
   };
   set_selections: {
     nodeIds: string[];
+  };
+  set_dev_resource: {
+    nodeId: string;
+    name: string;
+    url: string;
+  };
+  get_dev_resources: {
+    nodeId: string;
+  };
+  set_dev_status: {
+    nodeId: string;
+    type: "READY_FOR_DEV" | "COMPLETED" | "NONE";
+    description?: string;
   };
 
 };
