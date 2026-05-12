@@ -912,6 +912,28 @@ nodePropTool(
 );
 
 wrapToolHandler(
+  "add_fill",
+  "Append a paint to a node's fills (or insert at index). Existing fills are preserved. " +
+  "SOLID paints get color clamped 0-1; GRADIENT/IMAGE paints pass through (caller supplies valid shape).",
+  {
+    nodeId: z.string(),
+    paint: z.any().describe("Paint object: { type:'SOLID', color:{r,g,b}, opacity? } or GRADIENT/IMAGE shape"),
+    index: z.number().int().nonnegative().optional().describe("Insertion index (default: append at end)"),
+  },
+  (r: any) => `Added fill to "${r.name}" (now ${r.fills.length} fill(s))`,
+);
+
+wrapToolHandler(
+  "remove_fill_at",
+  "Remove the fill at the given index from a node's fills array. Other fills are preserved.",
+  {
+    nodeId: z.string(),
+    index: z.number().int().nonnegative(),
+  },
+  (r: any) => `Removed fill[${r.removed?.type ?? "?"}] from "${r.name}" (${r.fills.length} remaining)`,
+);
+
+wrapToolHandler(
   "set_constraints",
   "Set constraint behavior on a non-auto-layout child. " +
   "horizontal/vertical each accept: MIN | MAX | CENTER | STRETCH | SCALE. " +
@@ -3348,6 +3370,8 @@ type FigmaCommand =
   | "rename_style"
   | "delete_style"
   | "set_constraints"
+  | "add_fill"
+  | "remove_fill_at"
   | "create_component_from_node"
   | "detach_instance"
   | "swap_instance"
@@ -3549,6 +3573,8 @@ type CommandParams = {
     horizontal?: "MIN" | "MAX" | "CENTER" | "STRETCH" | "SCALE";
     vertical?: "MIN" | "MAX" | "CENTER" | "STRETCH" | "SCALE";
   };
+  add_fill: { nodeId: string; paint: any; index?: number };
+  remove_fill_at: { nodeId: string; index: number };
   create_component_from_node: { nodeId: string };
   detach_instance: { nodeId: string };
   swap_instance: { nodeId: string; mainComponentId: string };

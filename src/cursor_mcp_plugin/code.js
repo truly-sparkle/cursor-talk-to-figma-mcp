@@ -234,6 +234,10 @@ async function handleCommand(command, params) {
       return await deleteStyle(params);
     case "set_constraints":
       return await setConstraints(params);
+    case "add_fill":
+      return await addFill(params);
+    case "remove_fill_at":
+      return await removeFillAt(params);
     case "create_component_from_node":
       return await createComponentFromNode(params);
     case "detach_instance":
@@ -1853,6 +1857,49 @@ async function deleteStyle(params) {
 }
 
 // ---- Design System: Components (create / detach / swap) -----------
+
+// ---- Paint stack helpers (BL-015) ---------------------------------
+
+// Append/insert a paint without replacing the existing fills array.
+// Mirrors Figma's "Add fill" UI button.
+async function addFill(params) {
+  const { nodeId, paint, index } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (!paint || typeof paint !== "object") throw new Error("Missing paint object");
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!("fills" in node)) {
+    throw new Error("Node does not support fills: " + node.type);
+  }
+  const next = Array.isArray(node.fills) ? node.fills.slice() : [];
+  // SOLID paints get the same clamp + defaults as set_image_fill / styles.
+  const normalized = paint.type === "SOLID" ? normalizePaintForStyle(paint) : paint;
+  if (typeof index === "number" && index >= 0 && index <= next.length) {
+    next.splice(index, 0, normalized);
+  } else {
+    next.push(normalized);
+  }
+  node.fills = next;
+  return { id: node.id, name: node.name, fills: node.fills };
+}
+
+async function removeFillAt(params) {
+  const { nodeId, index } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (typeof index !== "number") throw new Error("Missing numeric index");
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!("fills" in node)) {
+    throw new Error("Node does not support fills: " + node.type);
+  }
+  const current = Array.isArray(node.fills) ? node.fills.slice() : [];
+  if (index < 0 || index >= current.length) {
+    throw new Error("Index out of range: " + index + " (length " + current.length + ")");
+  }
+  const removed = current.splice(index, 1)[0];
+  node.fills = current;
+  return { id: node.id, name: node.name, removed: removed, fills: node.fills };
+}
 
 // ---- Layout: Constraints (BL-019) ---------------------------------
 
