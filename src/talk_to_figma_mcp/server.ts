@@ -799,29 +799,59 @@ server.tool(
   }
 );
 
+// ---- Tool wrappers (BL-027) ---------------------------------------
+//
+// Common tool-handler pattern: send to Figma, format result on success,
+// uniform error envelope on failure. New tools should use wrapToolHandler;
+// the three nodePropTool / variableTool / styleTool aliases below remain
+// for backward compatibility but delegate to it.
+//
+// Existing 60+ tools that hand-roll try/catch with bespoke error strings
+// are not migrated wholesale here — they continue to work. Migrate
+// opportunistically when touching a tool. The shared envelope:
+//   { content: [{ type: "text", text: "Error in <name>: <message>" }, ...] }
+//
+// `verbose: true` appends a pretty-printed JSON of the result for
+// debugging-friendly tools (variables, styles).
+type ToolWrapOpts = { verbose?: boolean };
+
+function mcpTextEnvelope(...texts: string[]) {
+  return { content: texts.map((text) => ({ type: "text" as const, text })) };
+}
+
+function formatToolError(toolName: string, error: unknown): string {
+  return `Error in ${toolName}: ${error instanceof Error ? error.message : String(error)}`;
+}
+
+function wrapToolHandler(
+  name: string,
+  description: string,
+  paramSchema: Record<string, any>,
+  successText: (typed: any) => string,
+  opts: ToolWrapOpts = {},
+) {
+  server.tool(name, description, paramSchema, async (args: any) => {
+    try {
+      const result = await sendCommandToFigma(name as any, args);
+      const lines = [successText(result)];
+      if (opts.verbose) lines.push(JSON.stringify(result, null, 2));
+      return mcpTextEnvelope(...lines);
+    } catch (error) {
+      return mcpTextEnvelope(formatToolError(name, error));
+    }
+  });
+}
+
 // ---- Trivial node-property tools ---------------------------------
 
+// Backward-compat alias. New code should use wrapToolHandler directly.
 function nodePropTool(
   name: string,
   description: string,
   paramSchema: Record<string, any>,
   successText: (typed: any) => string,
 ) {
-  server.tool(name, description, paramSchema, async (args: any) => {
-    try {
-      const result = await sendCommandToFigma(name as any, args);
-      return { content: [{ type: "text", text: successText(result) }] };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error in ${name}: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  });
+  wrapToolHandler(name, description, paramSchema, successText);
 }
 
 nodePropTool(
@@ -943,32 +973,14 @@ server.tool(
 
 // ---- Design System: Variables (write) -----------------------------
 
+// Backward-compat alias. New code should use wrapToolHandler({verbose:true}).
 function variableTool(
   name: string,
   description: string,
   paramSchema: Record<string, any>,
   successText: (typed: any) => string,
 ) {
-  server.tool(name, description, paramSchema, async (args: any) => {
-    try {
-      const result = await sendCommandToFigma(name as any, args);
-      return {
-        content: [
-          { type: "text", text: successText(result) },
-          { type: "text", text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error in ${name}: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  });
+  wrapToolHandler(name, description, paramSchema, successText, { verbose: true });
 }
 
 variableTool(
@@ -1109,32 +1121,14 @@ variableTool(
 
 // ---- Design System: Styles (create) -------------------------------
 
+// Backward-compat alias. New code should use wrapToolHandler({verbose:true}).
 function styleTool(
   name: string,
   description: string,
   paramSchema: Record<string, any>,
   successText: (typed: any) => string,
 ) {
-  server.tool(name, description, paramSchema, async (args: any) => {
-    try {
-      const result = await sendCommandToFigma(name as any, args);
-      return {
-        content: [
-          { type: "text", text: successText(result) },
-          { type: "text", text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error in ${name}: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  });
+  wrapToolHandler(name, description, paramSchema, successText, { verbose: true });
 }
 
 styleTool(
