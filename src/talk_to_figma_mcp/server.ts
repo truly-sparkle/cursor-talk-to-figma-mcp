@@ -1277,6 +1277,52 @@ wrapToolHandler(
   (r: any) => `Set constraints on "${r.name}": ${JSON.stringify(r.constraints)}`,
 );
 
+// ---- Auto-layout advanced (BL-021) --------------------------------
+
+wrapToolHandler(
+  "set_layout_wrap",
+  "Set auto-layout wrap mode on a frame. wrap: NO_WRAP | WRAP. Frame must have layoutMode != 'NONE'.",
+  { nodeId: z.string(), wrap: z.enum(["NO_WRAP", "WRAP"]) },
+  (r: any) => `Set layoutWrap on "${r.name}" to ${r.layoutWrap}`,
+);
+
+wrapToolHandler(
+  "set_min_max_size",
+  "Set min/max width and height on a node. Provide one or more; null clears the constraint. Negative values rejected.",
+  {
+    nodeId: z.string(),
+    minWidth: z.number().min(0).nullable().optional(),
+    maxWidth: z.number().min(0).nullable().optional(),
+    minHeight: z.number().min(0).nullable().optional(),
+    maxHeight: z.number().min(0).nullable().optional(),
+  },
+  (r: any) => `Set size constraints on "${r.name}": minW=${r.minWidth} maxW=${r.maxWidth} minH=${r.minHeight} maxH=${r.maxHeight}`,
+);
+
+wrapToolHandler(
+  "set_layout_align",
+  "Set a CHILD's layoutAlign within its auto-layout parent. Differs from set_axis_align (which sets parent's primary/counterAxisAlignItems). Values: MIN | CENTER | MAX | STRETCH | INHERIT.",
+  {
+    nodeId: z.string(),
+    align: z.enum(["MIN", "CENTER", "MAX", "STRETCH", "INHERIT"]),
+  },
+  (r: any) => `Set layoutAlign on "${r.name}" to ${r.layoutAlign}`,
+);
+
+wrapToolHandler(
+  "set_layout_grow",
+  "Set node.layoutGrow (0 or 1). 1 = fill main axis when in auto-layout parent.",
+  { nodeId: z.string(), grow: z.union([z.literal(0), z.literal(1)]) },
+  (r: any) => `Set layoutGrow on "${r.name}" to ${r.layoutGrow}`,
+);
+
+wrapToolHandler(
+  "set_counter_axis_spacing",
+  "Set gap between wrapped rows/cols (counterAxisSpacing). Only meaningful when layoutWrap='WRAP'. Frame must have layoutMode != 'NONE'.",
+  { nodeId: z.string(), spacing: z.number() },
+  (r: any) => `Set counterAxisSpacing on "${r.name}" to ${r.counterAxisSpacing}`,
+);
+
 // ---- Corner / Geometry (BL-022) -----------------------------------
 //
 // `set_corner_radius` (above) sets a uniform radius. These tools fill the
@@ -3866,6 +3912,11 @@ type FigmaCommand =
   | "set_axis_align"
   | "set_layout_sizing"
   | "set_item_spacing"
+  | "set_layout_wrap"
+  | "set_min_max_size"
+  | "set_layout_align"
+  | "set_layout_grow"
+  | "set_counter_axis_spacing"
   | "get_reactions"
   | "set_default_connector"
   | "create_connections"

@@ -407,6 +407,16 @@ async function handleCommand(command, params) {
       return await setLayoutSizing(params);
     case "set_item_spacing":
       return await setItemSpacing(params);
+    case "set_layout_wrap":
+      return await setLayoutWrap(params);
+    case "set_min_max_size":
+      return await setMinMaxSize(params);
+    case "set_layout_align":
+      return await setLayoutAlign(params);
+    case "set_layout_grow":
+      return await setLayoutGrow(params);
+    case "set_counter_axis_spacing":
+      return await setCounterAxisSpacing(params);
     case "get_reactions":
       if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
         throw new Error("Missing or invalid nodeIds parameter");
@@ -6365,4 +6375,98 @@ async function booleanOperation(params) {
     parentId: result.parent ? result.parent.id : null,
     notFoundIds: notFound,
   };
+}
+
+// ---- Auto-layout advanced (BL-021) --------------------------------
+
+async function setLayoutWrap(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  if (p.wrap !== "NO_WRAP" && p.wrap !== "WRAP") {
+    throw new Error("wrap must be 'NO_WRAP' or 'WRAP'");
+  }
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found: " + p.nodeId);
+  if (!("layoutMode" in node) || node.layoutMode === "NONE") {
+    throw new Error("Node is not an auto-layout frame: " + node.type);
+  }
+  node.layoutWrap = p.wrap;
+  return { id: node.id, name: node.name, layoutWrap: node.layoutWrap };
+}
+
+async function setMinMaxSize(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  const keys = ["minWidth", "maxWidth", "minHeight", "maxHeight"];
+  let any = false;
+  for (let i = 0; i < keys.length; i++) {
+    const v = p[keys[i]];
+    if (v !== undefined) {
+      any = true;
+      if (v !== null && (typeof v !== "number" || v < 0)) {
+        throw new Error(keys[i] + " must be a non-negative number or null");
+      }
+    }
+  }
+  if (!any) throw new Error("Provide at least one of minWidth/maxWidth/minHeight/maxHeight");
+
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found: " + p.nodeId);
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    if (p[k] !== undefined && k in node) {
+      node[k] = p[k];
+    }
+  }
+  return {
+    id: node.id, name: node.name,
+    minWidth: node.minWidth, maxWidth: node.maxWidth,
+    minHeight: node.minHeight, maxHeight: node.maxHeight,
+  };
+}
+
+async function setLayoutAlign(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  const valid = ["MIN", "CENTER", "MAX", "STRETCH", "INHERIT"];
+  if (valid.indexOf(p.align) === -1) {
+    throw new Error("align must be one of: " + valid.join(" | "));
+  }
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found: " + p.nodeId);
+  if (!("layoutAlign" in node)) {
+    throw new Error("Node does not support layoutAlign: " + node.type);
+  }
+  node.layoutAlign = p.align;
+  return { id: node.id, name: node.name, layoutAlign: node.layoutAlign };
+}
+
+async function setLayoutGrow(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  if (p.grow !== 0 && p.grow !== 1) {
+    throw new Error("grow must be 0 or 1");
+  }
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found: " + p.nodeId);
+  if (!("layoutGrow" in node)) {
+    throw new Error("Node does not support layoutGrow: " + node.type);
+  }
+  node.layoutGrow = p.grow;
+  return { id: node.id, name: node.name, layoutGrow: node.layoutGrow };
+}
+
+async function setCounterAxisSpacing(params) {
+  const p = params || {};
+  if (!p.nodeId) throw new Error("Missing nodeId");
+  if (typeof p.spacing !== "number" || !isFinite(p.spacing)) {
+    throw new Error("spacing must be a finite number");
+  }
+  const node = await figma.getNodeByIdAsync(p.nodeId);
+  if (!node) throw new Error("Node not found: " + p.nodeId);
+  if (!("layoutMode" in node) || node.layoutMode === "NONE") {
+    throw new Error("Node is not an auto-layout frame: " + node.type);
+  }
+  node.counterAxisSpacing = p.spacing;
+  return { id: node.id, name: node.name, counterAxisSpacing: node.counterAxisSpacing };
 }
