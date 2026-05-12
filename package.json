@@ -18,6 +18,7 @@
     "setup": "./scripts/setup.sh",
     "build": "tsup",
     "build:watch": "tsup --watch",
+    "lint:plugin": "bun run scripts/check-plugin-es-compat.ts",
     "dev": "bun run build:watch",
     "pub:release": "bun run build && npm publish"
   },
