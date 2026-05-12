@@ -175,7 +175,10 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(filterFigmaNode(result))
+            // The plugin already runs filterFigmaNode (see code.js): hex-converts
+            // colors, normalizes imageRef→imageHash, and strips boundVariables.
+            // Server-side post-processing was a duplicate of that pipeline.
+            text: JSON.stringify(result)
           }
         ]
       };
@@ -191,85 +194,6 @@ server.tool(
     }
   }
 );
-function channelToByte(v) {
-  const n = typeof v === "number" && Number.isFinite(v) ? v : 0;
-  return Math.round(Math.max(0, Math.min(1, n)) * 255);
-}
-function rgbaToHex(color) {
-  if (typeof color === "string") {
-    return color.startsWith("#") ? color : `#${color}`;
-  }
-  const r = channelToByte(color?.r);
-  const g = channelToByte(color?.g);
-  const b = channelToByte(color?.b);
-  const a = channelToByte(color?.a == null ? 1 : color.a);
-  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}${a === 255 ? "" : a.toString(16).padStart(2, "0")}`;
-}
-function filterFigmaNode(node) {
-  if (node.type === "VECTOR") {
-    return null;
-  }
-  const filtered = {
-    id: node.id,
-    name: node.name,
-    type: node.type
-  };
-  if (node.fills && node.fills.length > 0) {
-    filtered.fills = node.fills.map((fill) => {
-      const processedFill = { ...fill };
-      delete processedFill.boundVariables;
-      delete processedFill.imageRef;
-      if (processedFill.gradientStops) {
-        processedFill.gradientStops = processedFill.gradientStops.map((stop) => {
-          const processedStop = { ...stop };
-          if (processedStop.color) {
-            processedStop.color = rgbaToHex(processedStop.color);
-          }
-          delete processedStop.boundVariables;
-          return processedStop;
-        });
-      }
-      if (processedFill.color) {
-        processedFill.color = rgbaToHex(processedFill.color);
-      }
-      return processedFill;
-    });
-  }
-  if (node.strokes && node.strokes.length > 0) {
-    filtered.strokes = node.strokes.map((stroke) => {
-      const processedStroke = { ...stroke };
-      delete processedStroke.boundVariables;
-      if (processedStroke.color) {
-        processedStroke.color = rgbaToHex(processedStroke.color);
-      }
-      return processedStroke;
-    });
-  }
-  if (node.cornerRadius !== void 0) {
-    filtered.cornerRadius = node.cornerRadius;
-  }
-  if (node.absoluteBoundingBox) {
-    filtered.absoluteBoundingBox = node.absoluteBoundingBox;
-  }
-  if (node.characters) {
-    filtered.characters = node.characters;
-  }
-  if (node.style) {
-    filtered.style = {
-      fontFamily: node.style.fontFamily,
-      fontStyle: node.style.fontStyle,
-      fontWeight: node.style.fontWeight,
-      fontSize: node.style.fontSize,
-      textAlignHorizontal: node.style.textAlignHorizontal,
-      letterSpacing: node.style.letterSpacing,
-      lineHeightPx: node.style.lineHeightPx
-    };
-  }
-  if (node.children) {
-    filtered.children = node.children.map((child) => filterFigmaNode(child)).filter((child) => child !== null);
-  }
-  return filtered;
-}
 server.tool(
   "get_nodes_info",
   "Get detailed information about multiple nodes in Figma",
@@ -288,7 +212,9 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(results.map((result) => filterFigmaNode(result.info)))
+            // See BL-060: server-side filterFigmaNode removed — plugin
+            // already shapes the response.
+            text: JSON.stringify(results.map((result) => result.info))
           }
         ]
       };

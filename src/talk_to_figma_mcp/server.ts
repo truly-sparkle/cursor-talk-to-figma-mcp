@@ -255,7 +255,10 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(filterFigmaNode(result))
+            // The plugin already runs filterFigmaNode (see code.js): hex-converts
+            // colors, normalizes imageRef→imageHash, and strips boundVariables.
+            // Server-side post-processing was a duplicate of that pipeline.
+            text: JSON.stringify(result)
           }
         ]
       };
@@ -273,116 +276,12 @@ server.tool(
   }
 );
 
-// Clamp a Figma 0-1 channel into a valid 0-255 byte. Out-of-range / NaN
-// would otherwise produce broken hex (e.g. r=1.5 → 383 → "17f").
-function channelToByte(v: any): number {
-  const n = typeof v === "number" && Number.isFinite(v) ? v : 0;
-  return Math.round(Math.max(0, Math.min(1, n)) * 255);
-}
-
-function rgbaToHex(color: any): string {
-  // skip if color is already hex
-  if (typeof color === "string") {
-    return color.startsWith("#") ? color : `#${color}`;
-  }
-
-  const r = channelToByte(color?.r);
-  const g = channelToByte(color?.g);
-  const b = channelToByte(color?.b);
-  // Alpha defaults to 1 when missing — common in Figma SOLID paints.
-  const a = channelToByte(color?.a == null ? 1 : color.a);
-
-  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}${a === 255 ? '' : a.toString(16).padStart(2, '0')}`;
-}
-
-function filterFigmaNode(node: any) {
-  // Skip VECTOR type nodes
-  if (node.type === "VECTOR") {
-    return null;
-  }
-
-  const filtered: any = {
-    id: node.id,
-    name: node.name,
-    type: node.type,
-  };
-
-  if (node.fills && node.fills.length > 0) {
-    filtered.fills = node.fills.map((fill: any) => {
-      const processedFill = { ...fill };
-
-      // Remove boundVariables and imageRef
-      delete processedFill.boundVariables;
-      delete processedFill.imageRef;
-
-      // Process gradientStops if present
-      if (processedFill.gradientStops) {
-        processedFill.gradientStops = processedFill.gradientStops.map((stop: any) => {
-          const processedStop = { ...stop };
-          // Convert color to hex if present
-          if (processedStop.color) {
-            processedStop.color = rgbaToHex(processedStop.color);
-          }
-          // Remove boundVariables
-          delete processedStop.boundVariables;
-          return processedStop;
-        });
-      }
-
-      // Convert solid fill colors to hex
-      if (processedFill.color) {
-        processedFill.color = rgbaToHex(processedFill.color);
-      }
-
-      return processedFill;
-    });
-  }
-
-  if (node.strokes && node.strokes.length > 0) {
-    filtered.strokes = node.strokes.map((stroke: any) => {
-      const processedStroke = { ...stroke };
-      // Remove boundVariables
-      delete processedStroke.boundVariables;
-      // Convert color to hex if present
-      if (processedStroke.color) {
-        processedStroke.color = rgbaToHex(processedStroke.color);
-      }
-      return processedStroke;
-    });
-  }
-
-  if (node.cornerRadius !== undefined) {
-    filtered.cornerRadius = node.cornerRadius;
-  }
-
-  if (node.absoluteBoundingBox) {
-    filtered.absoluteBoundingBox = node.absoluteBoundingBox;
-  }
-
-  if (node.characters) {
-    filtered.characters = node.characters;
-  }
-
-  if (node.style) {
-    filtered.style = {
-      fontFamily: node.style.fontFamily,
-      fontStyle: node.style.fontStyle,
-      fontWeight: node.style.fontWeight,
-      fontSize: node.style.fontSize,
-      textAlignHorizontal: node.style.textAlignHorizontal,
-      letterSpacing: node.style.letterSpacing,
-      lineHeightPx: node.style.lineHeightPx
-    };
-  }
-
-  if (node.children) {
-    filtered.children = node.children
-      .map((child: any) => filterFigmaNode(child))
-      .filter((child: any) => child !== null); // Remove null children (VECTOR nodes)
-  }
-
-  return filtered;
-}
+// Note: filterFigmaNode + rgbaToHex + channelToByte (BL-006) used to live
+// here as a server-side normalization layer. They were dead code: the
+// plugin's own filterFigmaNode (code.js) already hex-converts colors,
+// normalizes imageRef→imageHash, and strips boundVariables before sending
+// the response. Removed in BL-060. The plugin is now the single source of
+// truth for response shaping.
 
 // Nodes Info Tool
 server.tool(
@@ -403,7 +302,9 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(results.map((result) => filterFigmaNode(result.info)))
+            // See BL-060: server-side filterFigmaNode removed — plugin
+            // already shapes the response.
+            text: JSON.stringify(results.map((result) => result.info))
           }
         ]
       };
