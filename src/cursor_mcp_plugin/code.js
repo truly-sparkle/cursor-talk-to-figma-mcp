@@ -242,6 +242,14 @@ async function handleCommand(command, params) {
       return await setImageFilters(params);
     case "get_image_bytes_by_hash":
       return await getImageBytesByHash(params);
+    case "get_viewport_bounds":
+      return await getViewportBounds(params);
+    case "set_viewport_zoom":
+      return await setViewportZoom(params);
+    case "set_viewport_center":
+      return await setViewportCenter(params);
+    case "scroll_and_zoom_into_view":
+      return await scrollAndZoomIntoView(params);
     case "create_component_from_node":
       return await createComponentFromNode(params);
     case "detach_instance":
@@ -1861,6 +1869,60 @@ async function deleteStyle(params) {
 }
 
 // ---- Design System: Components (create / detach / swap) -----------
+
+// ---- Viewport / camera (BL-033) -----------------------------------
+
+async function getViewportBounds(_params) {
+  const v = figma.viewport;
+  return {
+    center: { x: v.center.x, y: v.center.y },
+    zoom: v.zoom,
+    bounds: {
+      x: v.bounds.x,
+      y: v.bounds.y,
+      width: v.bounds.width,
+      height: v.bounds.height,
+    },
+  };
+}
+
+async function setViewportZoom(params) {
+  const { zoom } = params || {};
+  if (typeof zoom !== "number" || !isFinite(zoom) || zoom <= 0) {
+    throw new Error("zoom must be a positive number (0.02-256 typical range)");
+  }
+  figma.viewport.zoom = zoom;
+  return { zoom: figma.viewport.zoom };
+}
+
+async function setViewportCenter(params) {
+  const { x, y } = params || {};
+  if (typeof x !== "number" || typeof y !== "number") {
+    throw new Error("x and y must be numbers (canvas coordinates)");
+  }
+  figma.viewport.center = { x: x, y: y };
+  return { center: { x: figma.viewport.center.x, y: figma.viewport.center.y } };
+}
+
+async function scrollAndZoomIntoView(params) {
+  const { nodeIds } = params || {};
+  if (!Array.isArray(nodeIds) || nodeIds.length === 0) {
+    throw new Error("nodeIds must be a non-empty string array");
+  }
+  const nodes = [];
+  for (let i = 0; i < nodeIds.length; i++) {
+    const n = await figma.getNodeByIdAsync(nodeIds[i]);
+    if (!n) throw new Error("Node not found: " + nodeIds[i]);
+    nodes.push(n);
+  }
+  figma.viewport.scrollAndZoomIntoView(nodes);
+  const v = figma.viewport;
+  return {
+    framedNodeCount: nodes.length,
+    center: { x: v.center.x, y: v.center.y },
+    zoom: v.zoom,
+  };
+}
 
 // ---- Image follow-ups (BL-024) ------------------------------------
 

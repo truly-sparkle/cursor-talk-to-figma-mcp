@@ -934,6 +934,34 @@ wrapToolHandler(
 );
 
 wrapToolHandler(
+  "get_viewport_bounds",
+  "Read the current Figma viewport: center (canvas coords), zoom factor, and visible bounds rect.",
+  {},
+  (r: any) => `Viewport: center (${r.center.x}, ${r.center.y}), zoom ${r.zoom}`,
+);
+
+wrapToolHandler(
+  "set_viewport_zoom",
+  "Set viewport zoom level (positive number, typical range 0.02-256).",
+  { zoom: z.number().positive() },
+  (r: any) => `Viewport zoom set to ${r.zoom}`,
+);
+
+wrapToolHandler(
+  "set_viewport_center",
+  "Set viewport center to canvas coordinates (x, y).",
+  { x: z.number(), y: z.number() },
+  (r: any) => `Viewport centered at (${r.center.x}, ${r.center.y})`,
+);
+
+wrapToolHandler(
+  "scroll_and_zoom_into_view",
+  "Frame one or more nodes in the viewport (figma.viewport.scrollAndZoomIntoView).",
+  { nodeIds: z.array(z.string()).min(1) },
+  (r: any) => `Framed ${r.framedNodeCount} node(s); center (${r.center.x}, ${r.center.y}), zoom ${r.zoom}`,
+);
+
+wrapToolHandler(
   "set_image_filters",
   "Adjust an IMAGE paint's filters: exposure, contrast, saturation, temperature, tint, highlights, shadows. " +
   "Each value is -1..1 (clamped). Only specified keys change; others are preserved.",
@@ -3405,6 +3433,10 @@ type FigmaCommand =
   | "remove_fill_at"
   | "set_image_filters"
   | "get_image_bytes_by_hash"
+  | "get_viewport_bounds"
+  | "set_viewport_zoom"
+  | "set_viewport_center"
+  | "scroll_and_zoom_into_view"
   | "create_component_from_node"
   | "detach_instance"
   | "swap_instance"
@@ -3618,6 +3650,10 @@ type CommandParams = {
     target?: "fills" | "strokes";
   };
   get_image_bytes_by_hash: { imageHash: string };
+  get_viewport_bounds: Record<string, never>;
+  set_viewport_zoom: { zoom: number };
+  set_viewport_center: { x: number; y: number };
+  scroll_and_zoom_into_view: { nodeIds: string[] };
   create_component_from_node: { nodeId: string };
   detach_instance: { nodeId: string };
   swap_instance: { nodeId: string; mainComponentId: string };
