@@ -67,8 +67,10 @@ async function sendProgressUpdate(
   console.log(`Progress update: ${status} - ${progress}% - ${message}`);
 
   // Yield so the Figma plugin sandbox flushes postMessage to ui.html
-  // before the next iteration begins
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  // before the next iteration begins. Uses the shared delay() helper
+  // (BL-036) instead of an inline setTimeout-Promise to keep the
+  // wait-pattern consistent across the plugin.
+  await delay(0);
 
   return update;
 }
