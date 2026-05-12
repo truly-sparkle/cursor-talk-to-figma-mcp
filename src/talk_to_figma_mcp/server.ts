@@ -800,6 +800,79 @@ server.tool(
   }
 );
 
+// ---- Paint / LayoutGrid zod schemas (BL-067) ----------------------
+//
+// Tightens previous z.any() in paint/grid arrays so MCP clients can
+// auto-document the expected shape. Each schema uses .passthrough() —
+// extra fields pass through to Figma without rejection (forward-compat
+// for new Figma API fields).
+
+const colorRGBA01 = z.object({
+  r: z.number().min(0).max(1),
+  g: z.number().min(0).max(1),
+  b: z.number().min(0).max(1),
+  a: z.number().min(0).max(1).optional(),
+});
+
+const gradientStopSchema = z.object({
+  position: z.number().min(0).max(1),
+  color: colorRGBA01,
+});
+
+const paintSchema = z.union([
+  z.object({
+    type: z.literal("SOLID"),
+    color: colorRGBA01.omit({ a: true }),
+    opacity: z.number().min(0).max(1).optional(),
+    visible: z.boolean().optional(),
+    blendMode: z.string().optional(),
+  }).passthrough(),
+  z.object({
+    type: z.enum(["GRADIENT_LINEAR", "GRADIENT_RADIAL", "GRADIENT_ANGULAR", "GRADIENT_DIAMOND"]),
+    gradientStops: z.array(gradientStopSchema).min(2),
+    gradientTransform: z.array(z.array(z.number())).optional(),
+    opacity: z.number().min(0).max(1).optional(),
+    visible: z.boolean().optional(),
+  }).passthrough(),
+  z.object({
+    type: z.literal("IMAGE"),
+    imageHash: z.string().optional(),
+    scaleMode: z.enum(["FILL", "FIT", "CROP", "TILE"]).optional(),
+    opacity: z.number().min(0).max(1).optional(),
+    rotation: z.number().optional(),
+    visible: z.boolean().optional(),
+  }).passthrough(),
+]);
+
+const layoutGridSchema = z.union([
+  z.object({
+    pattern: z.literal("COLUMNS"),
+    count: z.number().int().positive(),
+    sectionSize: z.number().positive().optional(),
+    offset: z.number().optional(),
+    gutterSize: z.number().nonnegative().optional(),
+    alignment: z.enum(["MIN", "MAX", "STRETCH", "CENTER"]).optional(),
+    color: colorRGBA01.optional(),
+    visible: z.boolean().optional(),
+  }).passthrough(),
+  z.object({
+    pattern: z.literal("ROWS"),
+    count: z.number().int().positive(),
+    sectionSize: z.number().positive().optional(),
+    offset: z.number().optional(),
+    gutterSize: z.number().nonnegative().optional(),
+    alignment: z.enum(["MIN", "MAX", "STRETCH", "CENTER"]).optional(),
+    color: colorRGBA01.optional(),
+    visible: z.boolean().optional(),
+  }).passthrough(),
+  z.object({
+    pattern: z.literal("GRID"),
+    sectionSize: z.number().positive(),
+    color: colorRGBA01.optional(),
+    visible: z.boolean().optional(),
+  }).passthrough(),
+]);
+
 // ---- Tool wrappers (BL-027) ---------------------------------------
 //
 // Common tool-handler pattern: send to Figma, format result on success,
@@ -918,7 +991,7 @@ wrapToolHandler(
   "SOLID paints get color clamped 0-1; GRADIENT/IMAGE paints pass through (caller supplies valid shape).",
   {
     nodeId: z.string(),
-    paint: z.any().describe("Paint object: { type:'SOLID', color:{r,g,b}, opacity? } or GRADIENT/IMAGE shape"),
+    paint: paintSchema.describe("Paint object — SOLID/GRADIENT_*/IMAGE union"),
     index: z.number().int().nonnegative().optional().describe("Insertion index (default: append at end)"),
   },
   (r: any) => `Added fill to "${r.name}" (now ${r.fills.length} fill(s))`,
@@ -1444,7 +1517,7 @@ wrapToolHandler(
       ]).optional(),
       textCase: z.enum(["ORIGINAL", "UPPER", "LOWER", "TITLE", "SMALL_CAPS", "SMALL_CAPS_FORCED"]).optional(),
       textDecoration: z.enum(["NONE", "UNDERLINE", "STRIKETHROUGH"]).optional(),
-      fills: z.array(z.any()).optional(),
+      fills: z.array(paintSchema).optional(),
     }),
   },
   (r: any) => `Applied style on ${r.id} [${r.start}, ${r.end}): ${r.applied.join(", ")}`,
@@ -2001,7 +2074,7 @@ styleTool(
   "SOLID paints get color {r,g,b} 0-1 clamping; GRADIENT/IMAGE paints pass through (you must supply valid shape).",
   {
     name: z.string().min(1).describe("Style name, e.g. 'color/brand/primary' (slashes create groups)"),
-    paints: z.array(z.any()).describe("Paint array. SOLID: { type:'SOLID', color:{r,g,b}, opacity? }"),
+    paints: z.array(paintSchema).describe("Paint array — SOLID/GRADIENT_*/IMAGE union, multiple stack."),
     description: z.string().optional(),
   },
   (r: any) => `Created paint style "${r.name}" (${r.id})`,
@@ -2062,7 +2135,7 @@ styleTool(
   "Create a Layout Grid style. layoutGrids is an array of grid configs (COLUMNS/ROWS/GRID).",
   {
     name: z.string().min(1),
-    layoutGrids: z.array(z.any()).describe("Layout grid array, e.g. [{ pattern:'COLUMNS', count:12, gutterSize:16 }]"),
+    layoutGrids: z.array(layoutGridSchema).describe("Layout grid array — COLUMNS/ROWS/GRID union."),
     description: z.string().optional(),
   },
   (r: any) => `Created grid style "${r.name}" (${r.id})`,
