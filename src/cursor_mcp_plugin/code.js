@@ -496,6 +496,10 @@ async function handleCommand(command, params) {
       return await setFocus(params);
     case "set_selections":
       return await setSelections(params);
+    case "find_nodes_by_criteria":
+      return await findNodesByCriteria(params);
+    case "find_node_by_name":
+      return await findNodeByName(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -4690,6 +4694,161 @@ async function findNodesByTypes(node, types, matchingNodes = [], visited = new S
       await findNodesByTypes(child, types, matchingNodes, visited);
     }
   }
+}
+
+// ===== BL-069: Node search by name / criteria =====
+
+/**
+ * Build a name-matching predicate.
+ * @param {string|undefined} namePattern
+ * @param {boolean} useRegex - treat namePattern as a regular expression
+ * @returns {(name: string) => boolean}
+ */
+function makeNameMatcher(namePattern, useRegex) {
+  if (namePattern == null || namePattern === "") {
+    return function () { return true; };
+  }
+  if (useRegex) {
+    const re = new RegExp(namePattern);
+    return function (name) { return re.test(name || ""); };
+  }
+  const needle = namePattern.toLowerCase();
+  return function (name) {
+    return (name || "").toLowerCase().indexOf(needle) !== -1;
+  };
+}
+
+/**
+ * Walk the parent chain up to (but excluding) the search root, checking the
+ * `visible` flag. Returns false if the node or any ancestor below the root is
+ * hidden — mirrors scan_nodes_by_types' "skip hidden subtrees" behavior.
+ * @param {SceneNode} node
+ * @param {string} rootId
+ */
+function isEffectivelyVisible(node, rootId) {
+  let cur = node;
+  while (cur && cur.id !== rootId) {
+    if (cur.visible === false) return false;
+    cur = cur.parent;
+  }
+  return true;
+}
+
+/** Minimal node representation: id, name, type, bbox. */
+function nodeSummary(node) {
+  return {
+    id: node.id,
+    name: node.name || `Unnamed ${node.type}`,
+    type: node.type,
+    bbox: {
+      x: typeof node.x === "number" ? node.x : 0,
+      y: typeof node.y === "number" ? node.y : 0,
+      width: typeof node.width === "number" ? node.width : 0,
+      height: typeof node.height === "number" ? node.height : 0,
+    },
+  };
+}
+
+/**
+ * Resolve the search root: a node by id, or the current page when no id given.
+ * @param {string|undefined} rootId
+ */
+async function resolveSearchRoot(rootId) {
+  if (rootId) {
+    const node = await figma.getNodeByIdAsync(rootId);
+    if (!node) throw new Error(`Node with ID ${rootId} not found`);
+    return node;
+  }
+  return figma.currentPage;
+}
+
+async function findNodesByCriteria(params) {
+  const p = params || {};
+  const rootId = p.rootId;
+  const types = p.types;
+  const namePattern = p.namePattern;
+  const useRegex = p.regex === true;
+  const includeHidden = p.includeHidden === true;
+
+  const hasTypes = types && types.length > 0;
+  const hasName = namePattern != null && namePattern !== "";
+  if (!hasTypes && !hasName) {
+    throw new Error("Specify at least one of `types` or `namePattern`");
+  }
+
+  Log.info(`find_nodes_by_criteria: root=${rootId || "currentPage"}`);
+  const root = await resolveSearchRoot(rootId);
+
+  if (!("findAll" in root)) {
+    return {
+      success: true,
+      message: `Node "${root.name || root.id}" has no children to search`,
+      count: 0,
+      matchingNodes: [],
+      rootId: root.id,
+      searchedTypes: hasTypes ? types : null,
+    };
+  }
+
+  let matchName;
+  try {
+    matchName = makeNameMatcher(namePattern, useRegex);
+  } catch (e) {
+    throw new Error(`Invalid regex pattern: ${e && e.message ? e.message : String(e)}`);
+  }
+
+  // findAllWithCriteria is a fast native type filter; findAll walks everything
+  // when no type constraint is given. Name + visibility filtered in JS.
+  const candidates = hasTypes
+    ? root.findAllWithCriteria({ types: types })
+    : root.findAll(function () { return true; });
+
+  const matchingNodes = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const n = candidates[i];
+    if (!matchName(n.name)) continue;
+    if (!includeHidden && !isEffectivelyVisible(n, root.id)) continue;
+    matchingNodes.push(nodeSummary(n));
+  }
+
+  return {
+    success: true,
+    message: `Found ${matchingNodes.length} matching nodes.`,
+    count: matchingNodes.length,
+    matchingNodes: matchingNodes,
+    rootId: root.id,
+    searchedTypes: hasTypes ? types : null,
+  };
+}
+
+async function findNodeByName(params) {
+  const p = params || {};
+  const rootId = p.rootId;
+  const name = p.name;
+  const exact = p.exact === true;
+
+  if (name == null || name === "") {
+    throw new Error("`name` is required");
+  }
+
+  Log.info(`find_node_by_name: "${name}" root=${rootId || "currentPage"}`);
+  const root = await resolveSearchRoot(rootId);
+
+  if (!("findOne" in root)) {
+    return { found: false, rootId: root.id };
+  }
+
+  // findOne stops at the first match, so it is cheaper than findAll + [0].
+  const needle = exact ? name : name.toLowerCase();
+  const found = root.findOne(function (n) {
+    if (exact) return n.name === name;
+    return (n.name || "").toLowerCase().indexOf(needle) !== -1;
+  });
+
+  if (!found) {
+    return { found: false, rootId: root.id };
+  }
+  return { found: true, rootId: root.id, node: nodeSummary(found) };
 }
 
 // Set multiple annotations with async progress updates

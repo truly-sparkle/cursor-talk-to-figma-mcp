@@ -3181,6 +3181,113 @@ server.tool(
   }
 );
 
+// Find Nodes By Criteria Tool (BL-069)
+server.tool(
+  "find_nodes_by_criteria",
+  "Find nodes anywhere in a subtree by type and/or name. Unlike scan_nodes_by_types, this also filters by name (case-insensitive substring, or a regex). Searches descendants of rootId, or the current page when rootId is omitted. At least one of `types` or `namePattern` must be given.",
+  {
+    rootId: z
+      .string()
+      .optional()
+      .describe("ID of the node to search within. Defaults to the current page."),
+    types: z
+      .array(z.string())
+      .optional()
+      .describe("Node types to match, e.g. ['COMPONENT', 'FRAME', 'TEXT']. Omit to match any type."),
+    namePattern: z
+      .string()
+      .optional()
+      .describe("Name to match. Case-insensitive substring by default, or a regular expression when `regex` is true."),
+    regex: z
+      .boolean()
+      .optional()
+      .describe("Treat namePattern as a regular expression. Default false."),
+    includeHidden: z
+      .boolean()
+      .optional()
+      .describe("Include hidden nodes and descendants of hidden nodes. Default false."),
+  },
+  async ({ rootId, types, namePattern, regex, includeHidden }: any) => {
+    try {
+      const result = await sendCommandToFigma("find_nodes_by_criteria", {
+        rootId,
+        types,
+        namePattern,
+        regex,
+        includeHidden,
+      });
+      const typedResult = result as {
+        count: number;
+        matchingNodes: unknown[];
+      };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Found ${typedResult.count} matching node(s).`,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(typedResult.matchingNodes, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error finding nodes: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Find Node By Name Tool (BL-069)
+server.tool(
+  "find_node_by_name",
+  "Find the first node whose name matches, anywhere in a subtree. Returns a single node summary or a not-found result. Searches descendants of rootId, or the current page when rootId is omitted.",
+  {
+    name: z.string().describe("Name to match."),
+    rootId: z
+      .string()
+      .optional()
+      .describe("ID of the node to search within. Defaults to the current page."),
+    exact: z
+      .boolean()
+      .optional()
+      .describe("Require an exact, case-sensitive name match. Default false = case-insensitive substring."),
+  },
+  async ({ name, rootId, exact }: any) => {
+    try {
+      const result = await sendCommandToFigma("find_node_by_name", {
+        name,
+        rootId,
+        exact,
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error finding node: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // Text Replacement Strategy Prompt
 
 // Set Multiple Text Contents Tool
@@ -3872,7 +3979,9 @@ type FigmaCommand =
   | "set_flip"
   | "flatten"
   | "outline_stroke"
-  | "boolean_operation";
+  | "boolean_operation"
+  | "find_nodes_by_criteria"
+  | "find_node_by_name";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4239,6 +4348,18 @@ type CommandParams = {
     nodeIds: string[];
     operation: "union" | "subtract" | "intersect" | "exclude";
     parentId?: string;
+  };
+  find_nodes_by_criteria: {
+    rootId?: string;
+    types?: Array<string>;
+    namePattern?: string;
+    regex?: boolean;
+    includeHidden?: boolean;
+  };
+  find_node_by_name: {
+    name: string;
+    rootId?: string;
+    exact?: boolean;
   };
 
 };
