@@ -514,6 +514,12 @@ async function handleCommand(command, params) {
       return await distributeNodes(params);
     case "tidy_up":
       return await tidyUp(params);
+    case "get_team_libraries":
+      return await getTeamLibraries(params);
+    case "import_library_component":
+      return await importLibraryComponent(params);
+    case "import_library_variable":
+      return await importLibraryVariable(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -3273,6 +3279,112 @@ async function createComponentInstance(params) {
   } catch (error) {
     throw new Error(`Error creating component instance: ${error.message}`);
   }
+}
+
+// ===== BL-073: Team library discovery + import =====
+
+/**
+ * List available library variable collections, or — when a libraryCollectionKey
+ * is given — the variables inside one collection. Figma's team-library API only
+ * exposes variable collections (the old getAvailableComponentsAsync was removed),
+ * so component discovery goes through the Figma REST API or existing instances;
+ * import_library_component then pulls a component in by key.
+ */
+async function getTeamLibraries(params) {
+  const p = params || {};
+  const key = p.libraryCollectionKey;
+  if (!figma.teamLibrary) {
+    throw new Error("Team library API unavailable — manifest.json permissions must include 'teamlibrary' (and reload the plugin)");
+  }
+
+  if (key) {
+    const vars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(key);
+    const list = [];
+    for (let i = 0; i < vars.length; i++) {
+      list.push({ key: vars[i].key, name: vars[i].name, resolvedType: vars[i].resolvedType });
+    }
+    return { libraryCollectionKey: key, count: list.length, variables: list };
+  }
+
+  const collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+  const list = [];
+  for (let i = 0; i < collections.length; i++) {
+    list.push({ key: collections[i].key, name: collections[i].name, libraryName: collections[i].libraryName });
+  }
+  return { count: list.length, collections: list };
+}
+
+/**
+ * Import a published component by key, then (by default) create and place an
+ * instance. Set createInstance=false to import the main only. For a component
+ * SET, import a specific variant's key.
+ */
+async function importLibraryComponent(params) {
+  const p = params || {};
+  const componentKey = p.componentKey;
+  if (!componentKey) throw new Error("Missing componentKey");
+  const createInstance = p.createInstance === false ? false : true;
+
+  let main;
+  try {
+    main = await figma.importComponentByKeyAsync(componentKey);
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    throw new Error(`Could not import component by key "${componentKey}": ${msg}. For a component set, import a specific variant's key.`);
+  }
+
+  const result = {
+    success: true,
+    mainComponentId: main.id,
+    mainComponentName: main.name,
+    key: main.key,
+  };
+
+  if (!createInstance) {
+    result.instanceCreated = false;
+    return result;
+  }
+
+  const instance = main.createInstance();
+  instance.x = typeof p.x === "number" ? p.x : 0;
+  instance.y = typeof p.y === "number" ? p.y : 0;
+
+  if (p.parentId) {
+    const parent = await figma.getNodeByIdAsync(p.parentId);
+    if (parent && "appendChild" in parent) parent.appendChild(instance);
+    else figma.currentPage.appendChild(instance);
+  } else {
+    figma.currentPage.appendChild(instance);
+  }
+
+  result.instanceCreated = true;
+  result.instanceId = instance.id;
+  result.instanceName = instance.name;
+  result.x = instance.x;
+  result.y = instance.y;
+  result.width = instance.width;
+  result.height = instance.height;
+  return result;
+}
+
+/** Import a published variable by key into the local document. */
+async function importLibraryVariable(params) {
+  const p = params || {};
+  const variableKey = p.variableKey;
+  if (!variableKey) throw new Error("Missing variableKey");
+  if (!figma.variables || !figma.variables.importVariableByKeyAsync) {
+    throw new Error("Variable import API is not available in this context");
+  }
+
+  let variable;
+  try {
+    variable = await figma.variables.importVariableByKeyAsync(variableKey);
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    throw new Error(`Could not import variable by key "${variableKey}": ${msg}`);
+  }
+
+  return { success: true, variable: summarizeVariable(variable) };
 }
 
 // BL-025: format/constraint extended. PNG/JPG support raster constraints

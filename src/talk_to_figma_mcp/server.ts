@@ -133,6 +133,10 @@ const LONG_RUNNING_COMMANDS: ReadonlySet<string> = new Set([
   "export_node_as_image",
   "get_instance_overrides",
   "set_instance_overrides",
+  // BL-073: team-library calls hit the network (library fetch / import by key).
+  "get_team_libraries",
+  "import_library_component",
+  "import_library_variable",
 ]);
 
 function defaultTimeoutFor(command: string): number {
@@ -2312,6 +2316,102 @@ server.tool(
   }
 );
 
+// Get Team Libraries Tool (BL-073)
+server.tool(
+  "get_team_libraries",
+  "List available library variable collections from enabled team libraries (key, name, libraryName). Pass a libraryCollectionKey to instead list the variables in that collection (key, name, resolvedType) — use those keys with import_library_variable. Note: Figma's API does not expose a list of library components; import those by key via import_library_component.",
+  {
+    libraryCollectionKey: z
+      .string()
+      .optional()
+      .describe("A library variable collection key. Omit to list collections; provide it to list that collection's variables."),
+  },
+  async ({ libraryCollectionKey }: any) => {
+    try {
+      const result = await sendCommandToFigma("get_team_libraries", { libraryCollectionKey });
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting team libraries: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Import Library Component Tool (BL-073)
+server.tool(
+  "import_library_component",
+  "Import a published library component by key and, by default, create and place an instance of it. Set createInstance=false to import the main component only. For a component set, import a specific variant's key.",
+  {
+    componentKey: z.string().describe("The published component's key."),
+    createInstance: z
+      .boolean()
+      .optional()
+      .describe("Create and place an instance after importing. Default true."),
+    x: z.number().optional().describe("Instance X position (default 0). Only used when creating an instance."),
+    y: z.number().optional().describe("Instance Y position (default 0). Only used when creating an instance."),
+    parentId: z.string().optional().describe("Parent node to append the instance to. Defaults to the current page."),
+  },
+  async ({ componentKey, createInstance, x, y, parentId }: any) => {
+    try {
+      const result = await sendCommandToFigma("import_library_component", {
+        componentKey, createInstance, x, y, parentId,
+      });
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error importing library component: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Import Library Variable Tool (BL-073)
+server.tool(
+  "import_library_variable",
+  "Import a published library variable by key into the local document (via figma.variables.importVariableByKeyAsync). Get keys from get_team_libraries(libraryCollectionKey). Returns the imported variable's summary.",
+  {
+    variableKey: z.string().describe("The published variable's key."),
+  },
+  async ({ variableKey }: any) => {
+    try {
+      const result = await sendCommandToFigma("import_library_variable", { variableKey });
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error importing library variable: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // -------------------------------------------------------------------
 
 // Set Stroke Color Tool
@@ -4229,7 +4329,10 @@ type FigmaCommand =
   | "load_font"
   | "align_nodes"
   | "distribute_nodes"
-  | "tidy_up";
+  | "tidy_up"
+  | "get_team_libraries"
+  | "import_library_component"
+  | "import_library_variable";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4635,6 +4738,19 @@ type CommandParams = {
     nodeIds: string[];
     axis: "horizontal" | "vertical";
     spacing?: number;
+  };
+  get_team_libraries: {
+    libraryCollectionKey?: string;
+  };
+  import_library_component: {
+    componentKey: string;
+    createInstance?: boolean;
+    x?: number;
+    y?: number;
+    parentId?: string;
+  };
+  import_library_variable: {
+    variableKey: string;
   };
 
 };
