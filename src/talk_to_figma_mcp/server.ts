@@ -2256,6 +2256,62 @@ styleTool(
   (r: any) => `Set component properties on "${r.name}"`,
 );
 
+// Get Component Properties Tool (BL-071)
+server.tool(
+  "get_component_properties",
+  "Read the current component property values of an instance (instance.componentProperties): each property's type, value, and any bound variable. The read counterpart to set_component_property.",
+  {
+    instanceId: z.string().describe("ID of the component INSTANCE to read."),
+  },
+  async ({ instanceId }: any) => {
+    try {
+      const result = await sendCommandToFigma("get_component_properties", { instanceId });
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error reading component properties: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Get Component Property Definitions Tool (BL-071)
+server.tool(
+  "get_component_property_definitions",
+  "Read the component property definitions of a component set or non-variant component: each property's type, default value, and (for VARIANT) the available options / (for INSTANCE_SWAP) preferredValues. Pass a variant component's id and it resolves to its parent set automatically.",
+  {
+    componentSetId: z.string().describe("ID of the COMPONENT_SET or COMPONENT to read definitions from."),
+  },
+  async ({ componentSetId }: any) => {
+    try {
+      const result = await sendCommandToFigma("get_component_property_definitions", { componentSetId });
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error reading component property definitions: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // -------------------------------------------------------------------
 
 // Set Stroke Color Tool
@@ -4081,6 +4137,8 @@ type FigmaCommand =
   | "create_component_set"
   | "add_component_property"
   | "set_component_property"
+  | "get_component_properties"
+  | "get_component_property_definitions"
   | "set_stroke_color"
   | "move_node"
   | "resize_node"
@@ -4378,6 +4436,12 @@ type CommandParams = {
   set_component_property: {
     instanceId: string;
     properties: Record<string, any>;
+  };
+  get_component_properties: {
+    instanceId: string;
+  };
+  get_component_property_definitions: {
+    componentSetId: string;
   };
   set_stroke_color: {
     nodeId: string;

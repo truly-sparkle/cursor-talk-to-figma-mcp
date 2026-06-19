@@ -306,6 +306,10 @@ async function handleCommand(command, params) {
       return await addComponentProperty(params);
     case "set_component_property":
       return await setComponentProperty(params);
+    case "get_component_properties":
+      return await getComponentProperties(params);
+    case "get_component_property_definitions":
+      return await getComponentPropertyDefinitions(params);
     case "rename_node":
       return await renameNode(params);
     case "set_opacity":
@@ -2786,6 +2790,62 @@ async function setComponentProperty(params) {
     id: instance.id,
     name: instance.name,
     componentProperties: instance.componentProperties,
+  };
+}
+
+// BL-071: read component property values (instance) and definitions (set/component).
+
+async function getComponentProperties(params) {
+  const p = params || {};
+  const instanceId = p.instanceId;
+  if (!instanceId) throw new Error("Missing instanceId");
+
+  const node = await figma.getNodeByIdAsync(instanceId);
+  if (!node) throw new Error(`Node not found: ${instanceId}`);
+  if (node.type !== "INSTANCE") {
+    throw new Error(`Not an instance: ${instanceId} (${node.type}). Use get_component_property_definitions for a component or component set.`);
+  }
+
+  const main = await node.getMainComponentAsync();
+  return {
+    id: node.id,
+    name: node.name,
+    mainComponentId: main ? main.id : null,
+    mainComponentName: main ? main.name : null,
+    componentProperties: node.componentProperties,
+  };
+}
+
+async function getComponentPropertyDefinitions(params) {
+  const p = params || {};
+  const componentSetId = p.componentSetId;
+  if (!componentSetId) throw new Error("Missing componentSetId");
+
+  const node = await figma.getNodeByIdAsync(componentSetId);
+  if (!node) throw new Error(`Node not found: ${componentSetId}`);
+
+  if (node.type === "INSTANCE") {
+    throw new Error(`'${componentSetId}' is an instance. Use get_component_properties for instances, or pass its main component / component set id.`);
+  }
+  if (node.type !== "COMPONENT_SET" && node.type !== "COMPONENT") {
+    throw new Error(`Target must be COMPONENT_SET or COMPONENT, got ${node.type}`);
+  }
+
+  // A COMPONENT that is a variant of a set can't expose definitions directly —
+  // Figma throws on read; the definitions live on the parent set.
+  let source = node;
+  let resolvedFrom = null;
+  if (node.type === "COMPONENT" && node.parent && node.parent.type === "COMPONENT_SET") {
+    source = node.parent;
+    resolvedFrom = { variantId: node.id, componentSetId: node.parent.id };
+  }
+
+  return {
+    id: source.id,
+    name: source.name,
+    type: source.type,
+    resolvedFrom: resolvedFrom,
+    componentPropertyDefinitions: source.componentPropertyDefinitions,
   };
 }
 
