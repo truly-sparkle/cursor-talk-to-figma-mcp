@@ -3288,6 +3288,94 @@ server.tool(
   }
 );
 
+// List Available Fonts Tool (BL-072)
+server.tool(
+  "list_available_fonts",
+  "List fonts available in the current Figma environment, grouped by family with their styles. The full catalog is large (1000+ families), so pass a searchPattern to narrow it; results are capped (default 50 families) and a `truncated` flag is set when more match. Useful before text work to confirm a font exists.",
+  {
+    searchPattern: z
+      .string()
+      .optional()
+      .describe("Case-insensitive substring to filter font families, e.g. 'Inter'. Strongly recommended — the unfiltered catalog has 1000+ families."),
+    limit: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Max number of families to return (default 50). Narrow with searchPattern instead of raising this for large results."),
+  },
+  async ({ searchPattern, limit }: any) => {
+    try {
+      const result = await sendCommandToFigma("list_available_fonts", { searchPattern, limit });
+      const typedResult = result as {
+        count: number;
+        totalFamilies: number;
+        totalFonts: number;
+        truncated: boolean;
+        fonts: unknown[];
+      };
+      const famWord = typedResult.totalFamilies === 1 ? "family" : "families";
+      const styleWord = typedResult.totalFonts === 1 ? "style" : "styles";
+      const summary = typedResult.truncated
+        ? `Found ${typedResult.totalFamilies} font ${famWord} (${typedResult.totalFonts} ${styleWord}); showing first ${typedResult.count}. Narrow with searchPattern or raise limit.`
+        : `Found ${typedResult.totalFamilies} font ${famWord} (${typedResult.totalFonts} ${styleWord}).`;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: summary,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(typedResult.fonts),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error listing fonts: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Load Font Tool (BL-072)
+server.tool(
+  "load_font",
+  "Explicitly load a font (family + style) so it is ready for text operations. Text tools load fonts automatically, but prefetching is faster for batch work. Errors if the font is not available.",
+  {
+    family: z.string().describe("Font family, e.g. 'Inter'."),
+    style: z.string().describe("Font style, e.g. 'Regular', 'Bold', 'Medium'."),
+  },
+  async ({ family, style }: any) => {
+    try {
+      const result = await sendCommandToFigma("load_font", { family, style });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error loading font: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // Text Replacement Strategy Prompt
 
 // Set Multiple Text Contents Tool
@@ -3981,7 +4069,9 @@ type FigmaCommand =
   | "outline_stroke"
   | "boolean_operation"
   | "find_nodes_by_criteria"
-  | "find_node_by_name";
+  | "find_node_by_name"
+  | "list_available_fonts"
+  | "load_font";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4360,6 +4450,14 @@ type CommandParams = {
     name: string;
     rootId?: string;
     exact?: boolean;
+  };
+  list_available_fonts: {
+    searchPattern?: string;
+    limit?: number;
+  };
+  load_font: {
+    family: string;
+    style: string;
   };
 
 };

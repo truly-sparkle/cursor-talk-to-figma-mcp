@@ -500,6 +500,10 @@ async function handleCommand(command, params) {
       return await findNodesByCriteria(params);
     case "find_node_by_name":
       return await findNodeByName(params);
+    case "list_available_fonts":
+      return await listAvailableFonts(params);
+    case "load_font":
+      return await loadFont(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -4849,6 +4853,93 @@ async function findNodeByName(params) {
     return { found: false, rootId: root.id };
   }
   return { found: true, rootId: root.id, node: nodeSummary(found) };
+}
+
+// ===== BL-072: Font availability =====
+
+/**
+ * List available fonts, grouped by family. The host font catalog (Figma-bundled
+ * Google Fonts) is 1000+ families, so we group by family AND cap the number of
+ * families returned (default 50) to keep the response — and the relay payload —
+ * bounded. `truncated` signals there are more; narrow with searchPattern or
+ * raise `limit`. Optional searchPattern filters families by case-insensitive
+ * substring.
+ */
+async function listAvailableFonts(params) {
+  const p = params || {};
+  const searchPattern = p.searchPattern;
+  const hasPattern = searchPattern != null && searchPattern !== "";
+  const needle = hasPattern ? String(searchPattern).toLowerCase() : "";
+  const limit = typeof p.limit === "number" && p.limit > 0 ? Math.floor(p.limit) : 50;
+
+  Log.info(`list_available_fonts: pattern=${hasPattern ? searchPattern : "(all)"} limit=${limit}`);
+
+  const available = await figma.listAvailableFontsAsync();
+
+  // Null-proto map so font family names that collide with Object.prototype keys
+  // (e.g. "constructor", "toString") are handled correctly.
+  const byFamily = Object.create(null);
+  const order = [];
+  let totalFonts = 0;
+
+  for (let i = 0; i < available.length; i++) {
+    const entry = available[i];
+    const fn = entry && entry.fontName;
+    if (!fn) continue;
+    const family = fn.family;
+    const style = fn.style;
+    if (hasPattern && (family || "").toLowerCase().indexOf(needle) === -1) continue;
+
+    if (!(family in byFamily)) {
+      byFamily[family] = [];
+      order.push(family);
+    }
+    byFamily[family].push(style);
+    totalFonts++;
+  }
+
+  const totalFamilies = order.length;
+  const truncated = totalFamilies > limit;
+  const shown = truncated ? order.slice(0, limit) : order;
+
+  const fonts = [];
+  for (let i = 0; i < shown.length; i++) {
+    const family = shown[i];
+    fonts.push({ family: family, styles: byFamily[family] });
+  }
+
+  return {
+    success: true,
+    count: fonts.length,
+    totalFamilies: totalFamilies,
+    totalFonts: totalFonts,
+    truncated: truncated,
+    fonts: fonts,
+  };
+}
+
+/**
+ * Explicitly prefetch a single font. Text tools load fonts on demand, but
+ * prefetching is useful before batch operations. Throws if unavailable.
+ */
+async function loadFont(params) {
+  const p = params || {};
+  const family = p.family;
+  const style = p.style;
+
+  if (!family || !style) {
+    throw new Error("`family` and `style` are required");
+  }
+
+  Log.info(`load_font: ${family} / ${style}`);
+  await figma.loadFontAsync({ family: family, style: style });
+
+  return {
+    success: true,
+    family: family,
+    style: style,
+    message: `Loaded font "${family} ${style}".`,
+  };
 }
 
 // Set multiple annotations with async progress updates
