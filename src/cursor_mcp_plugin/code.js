@@ -504,6 +504,12 @@ async function handleCommand(command, params) {
       return await listAvailableFonts(params);
     case "load_font":
       return await loadFont(params);
+    case "align_nodes":
+      return await alignNodes(params);
+    case "distribute_nodes":
+      return await distributeNodes(params);
+    case "tidy_up":
+      return await tidyUp(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -4939,6 +4945,265 @@ async function loadFont(params) {
     family: family,
     style: style,
     message: `Loaded font "${family} ${style}".`,
+  };
+}
+
+// ===== BL-070: Align / distribute / tidy =====
+
+/** Walk the parent chain to the owning PageNode (or null if detached). */
+function getOwningPage(node) {
+  let a = node.parent;
+  while (a && a.type !== "PAGE") a = a.parent;
+  return a;
+}
+
+/**
+ * True when the node's parent frame applies any rotation/scale/skew (its
+ * absoluteTransform linear 2x2 part is not the identity). In that case the
+ * "shift local x/y by an absolute delta" trick is invalid, so we skip the node.
+ * A PAGE parent (no absoluteTransform) counts as identity — page coords are
+ * already absolute.
+ */
+function parentHasNonIdentityLinear(node) {
+  const parent = node.parent;
+  if (!parent || !("absoluteTransform" in parent)) return false;
+  const t = parent.absoluteTransform;
+  if (!t || !t[0] || !t[1]) return false;
+  const a = t[0][0], c = t[0][1], b = t[1][0], d = t[1][1];
+  const EPS = 1e-4;
+  return Math.abs(a - 1) > EPS || Math.abs(d - 1) > EPS
+    || Math.abs(b) > EPS || Math.abs(c) > EPS;
+}
+
+/** Format a skipped[] list for inclusion in error messages. */
+function describeSkipped(skipped) {
+  if (!skipped || skipped.length === 0) return "";
+  const parts = [];
+  for (let i = 0; i < skipped.length; i++) {
+    parts.push(skipped[i].id + " (" + skipped[i].reason + ")");
+  }
+  return "; skipped: " + parts.join(", ");
+}
+
+/**
+ * Resolve nodeIds into positionable scene nodes, snapshotting each node's
+ * absolute bounding box up front (so later moves never read stale geometry).
+ * Skips nodes that are missing, removed, non-positionable, bbox-less, managed
+ * by a parent auto-layout (x/y owned by the layout), not on the current page
+ * (cross-page absolute coords are unrelated), or under a rotated/scaled parent
+ * (the delta-move trick only holds for axis-aligned parents).
+ * Returns { nodes: [{node, bbox}], skipped: [{id, reason}] }.
+ */
+async function resolvePositionableNodes(nodeIds) {
+  if (!Array.isArray(nodeIds) || nodeIds.length === 0) {
+    throw new Error("`nodeIds` must be a non-empty array");
+  }
+  const nodes = [];
+  const skipped = [];
+  for (let i = 0; i < nodeIds.length; i++) {
+    const id = nodeIds[i];
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node) { skipped.push({ id: id, reason: "not found" }); continue; }
+    if (node.removed) { skipped.push({ id: id, reason: "removed" }); continue; }
+    if (!("x" in node) || !("absoluteBoundingBox" in node)) {
+      skipped.push({ id: id, reason: `type ${node.type} is not positionable` });
+      continue;
+    }
+    const bbox = node.absoluteBoundingBox;
+    if (!bbox) { skipped.push({ id: id, reason: "no bounding box" }); continue; }
+    // Auto-layout managed children can't be freely repositioned via x/y.
+    const parent = node.parent;
+    const managed = parent && "layoutMode" in parent && parent.layoutMode !== "NONE"
+      && node.layoutPositioning !== "ABSOLUTE";
+    if (managed) {
+      skipped.push({ id: id, reason: "managed by parent auto-layout (set layoutPositioning=ABSOLUTE to move)" });
+      continue;
+    }
+    // Cross-page nodes live in unrelated coordinate frames — combining their
+    // absolute bboxes would silently scramble positions. Restrict to current page.
+    const ownPage = getOwningPage(node);
+    if (!ownPage || ownPage.id !== figma.currentPage.id) {
+      skipped.push({ id: id, reason: "not on the current page" });
+      continue;
+    }
+    // The delta-move trick is only valid when the parent frame is axis-aligned.
+    if (parentHasNonIdentityLinear(node)) {
+      skipped.push({ id: id, reason: "parent is rotated/scaled (unsupported)" });
+      continue;
+    }
+    nodes.push({ node: node, bbox: bbox });
+  }
+  return { nodes: nodes, skipped: skipped };
+}
+
+/**
+ * Move a node so its absolute bounding box top-left lands at (targetAbsX,
+ * targetAbsY). The absolute→local delta equals the absolute delta as long as
+ * the parent isn't rotated/scaled (the ~universal case), so we just shift x/y.
+ */
+function shiftNodeTo(node, bbox, targetAbsX, targetAbsY) {
+  node.x = node.x + (targetAbsX - bbox.x);
+  node.y = node.y + (targetAbsY - bbox.y);
+}
+
+async function alignNodes(params) {
+  const p = params || {};
+  const axis = p.axis;
+  const VALID = ["left", "right", "top", "bottom", "center-h", "center-v"];
+  if (VALID.indexOf(axis) === -1) {
+    throw new Error(`axis must be one of: ${VALID.join(", ")}`);
+  }
+
+  const resolved = await resolvePositionableNodes(p.nodeIds);
+  const items = resolved.nodes;
+  if (items.length < 2) {
+    throw new Error(`align needs at least 2 positionable nodes, got ${items.length}` + describeSkipped(resolved.skipped));
+  }
+
+  // Combined bounding box in absolute space.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i < items.length; i++) {
+    const b = items[i].bbox;
+    if (b.x < minX) minX = b.x;
+    if (b.y < minY) minY = b.y;
+    if (b.x + b.width > maxX) maxX = b.x + b.width;
+    if (b.y + b.height > maxY) maxY = b.y + b.height;
+  }
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+
+  const moved = [];
+  for (let i = 0; i < items.length; i++) {
+    const node = items[i].node;
+    const b = items[i].bbox;
+    // Default targets = current position (zero delta on the untouched axis).
+    let targetX = b.x, targetY = b.y;
+    if (axis === "left") targetX = minX;
+    else if (axis === "right") targetX = maxX - b.width;
+    else if (axis === "center-h") targetX = centerX - b.width / 2;
+    else if (axis === "top") targetY = minY;
+    else if (axis === "bottom") targetY = maxY - b.height;
+    else if (axis === "center-v") targetY = centerY - b.height / 2;
+
+    shiftNodeTo(node, b, targetX, targetY);
+    moved.push(node.id);
+  }
+
+  return {
+    success: true,
+    axis: axis,
+    alignedCount: moved.length,
+    movedNodeIds: moved,
+    skipped: resolved.skipped,
+  };
+}
+
+async function distributeNodes(params) {
+  const p = params || {};
+  const direction = p.direction;
+  if (direction !== "horizontal" && direction !== "vertical") {
+    throw new Error('direction must be "horizontal" or "vertical"');
+  }
+
+  const resolved = await resolvePositionableNodes(p.nodeIds);
+  const items = resolved.nodes;
+  if (items.length < 3) {
+    throw new Error(`distribute needs at least 3 positionable nodes, got ${items.length}` + describeSkipped(resolved.skipped));
+  }
+
+  const horizontal = direction === "horizontal";
+  // Order by leading edge along the axis.
+  items.sort(function (a, b) {
+    return horizontal ? a.bbox.x - b.bbox.x : a.bbox.y - b.bbox.y;
+  });
+
+  // Equal-gap distribution: first & last stay put, inner gaps equalized.
+  const first = items[0].bbox;
+  const last = items[items.length - 1].bbox;
+  let sizeSum = 0;
+  for (let i = 0; i < items.length; i++) {
+    sizeSum += horizontal ? items[i].bbox.width : items[i].bbox.height;
+  }
+  const startEdge = horizontal ? first.x : first.y;
+  const endEdge = horizontal ? last.x + last.width : last.y + last.height;
+  const gap = (endEdge - startEdge - sizeSum) / (items.length - 1);
+
+  const moved = [];
+  let cursor = startEdge;
+  for (let i = 0; i < items.length; i++) {
+    const node = items[i].node;
+    const b = items[i].bbox;
+    if (horizontal) {
+      shiftNodeTo(node, b, cursor, b.y);
+      cursor += b.width + gap;
+    } else {
+      shiftNodeTo(node, b, b.x, cursor);
+      cursor += b.height + gap;
+    }
+    moved.push(node.id);
+  }
+
+  return {
+    success: true,
+    direction: direction,
+    distributedCount: moved.length,
+    gap: gap,
+    movedNodeIds: moved,
+    skipped: resolved.skipped,
+  };
+}
+
+async function tidyUp(params) {
+  const p = params || {};
+  const axis = p.axis;
+  if (axis !== "horizontal" && axis !== "vertical") {
+    throw new Error('axis must be "horizontal" or "vertical"');
+  }
+  const spacing = typeof p.spacing === "number" ? p.spacing : 0;
+
+  const resolved = await resolvePositionableNodes(p.nodeIds);
+  const items = resolved.nodes;
+  if (items.length < 2) {
+    throw new Error(`tidy_up needs at least 2 positionable nodes, got ${items.length}` + describeSkipped(resolved.skipped));
+  }
+
+  const horizontal = axis === "horizontal";
+  // Pack into a row (horizontal) or column (vertical) ordered by current
+  // position, aligned on the cross-axis to the group's min edge, with uniform
+  // spacing. Group origin (first node's leading edge) stays stable.
+  items.sort(function (a, b) {
+    return horizontal ? a.bbox.x - b.bbox.x : a.bbox.y - b.bbox.y;
+  });
+
+  let crossMin = Infinity;
+  for (let i = 0; i < items.length; i++) {
+    const c = horizontal ? items[i].bbox.y : items[i].bbox.x;
+    if (c < crossMin) crossMin = c;
+  }
+  const mainStart = horizontal ? items[0].bbox.x : items[0].bbox.y;
+
+  const moved = [];
+  let cursor = mainStart;
+  for (let i = 0; i < items.length; i++) {
+    const node = items[i].node;
+    const b = items[i].bbox;
+    if (horizontal) {
+      shiftNodeTo(node, b, cursor, crossMin);
+      cursor += b.width + spacing;
+    } else {
+      shiftNodeTo(node, b, crossMin, cursor);
+      cursor += b.height + spacing;
+    }
+    moved.push(node.id);
+  }
+
+  return {
+    success: true,
+    axis: axis,
+    spacing: spacing,
+    tidiedCount: moved.length,
+    movedNodeIds: moved,
+    skipped: resolved.skipped,
   };
 }
 

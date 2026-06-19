@@ -3376,6 +3376,103 @@ server.tool(
   }
 );
 
+// Align Nodes Tool (BL-070)
+server.tool(
+  "align_nodes",
+  "Align multiple nodes to a shared edge or center of their combined bounding box, like Figma's Align buttons. Works across different (axis-aligned) parents on the current page. Nodes are skipped (and reported in `skipped`) if they are managed by a parent auto-layout, not on the current page, or under a rotated/scaled parent.",
+  {
+    nodeIds: z.array(z.string()).min(2).describe("IDs of nodes to align (at least 2)."),
+    axis: z
+      .enum(["left", "right", "top", "bottom", "center-h", "center-v"])
+      .describe("left/right/center-h move along X; top/bottom/center-v move along Y."),
+  },
+  async ({ nodeIds, axis }: any) => {
+    try {
+      const result = await sendCommandToFigma("align_nodes", { nodeIds, axis });
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error aligning nodes: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Distribute Nodes Tool (BL-070)
+server.tool(
+  "distribute_nodes",
+  "Distribute 3+ nodes so the gaps between them are equal along the given direction, like Figma's Distribute spacing. The first and last nodes stay put. Nodes are skipped (and reported in `skipped`) if they are managed by a parent auto-layout, not on the current page, or under a rotated/scaled parent.",
+  {
+    nodeIds: z.array(z.string()).min(3).describe("IDs of nodes to distribute (at least 3)."),
+    direction: z
+      .enum(["horizontal", "vertical"])
+      .describe("Axis along which to equalize spacing."),
+  },
+  async ({ nodeIds, direction }: any) => {
+    try {
+      const result = await sendCommandToFigma("distribute_nodes", { nodeIds, direction });
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error distributing nodes: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Tidy Up Tool (BL-070)
+server.tool(
+  "tidy_up",
+  "Pack nodes into a single row (horizontal) or column (vertical) with uniform spacing, ordered by their current position and aligned on the cross-axis. Nodes are skipped (and reported in `skipped`) if they are managed by a parent auto-layout, not on the current page, or under a rotated/scaled parent.",
+  {
+    nodeIds: z.array(z.string()).min(2).describe("IDs of nodes to tidy (at least 2)."),
+    axis: z
+      .enum(["horizontal", "vertical"])
+      .describe("horizontal = row, vertical = column."),
+    spacing: z
+      .number()
+      .optional()
+      .describe("Gap between nodes in pixels. Default 0."),
+  },
+  async ({ nodeIds, axis, spacing }: any) => {
+    try {
+      const result = await sendCommandToFigma("tidy_up", { nodeIds, axis, spacing });
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error tidying nodes: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // Text Replacement Strategy Prompt
 
 // Set Multiple Text Contents Tool
@@ -4071,7 +4168,10 @@ type FigmaCommand =
   | "find_nodes_by_criteria"
   | "find_node_by_name"
   | "list_available_fonts"
-  | "load_font";
+  | "load_font"
+  | "align_nodes"
+  | "distribute_nodes"
+  | "tidy_up";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4458,6 +4558,19 @@ type CommandParams = {
   load_font: {
     family: string;
     style: string;
+  };
+  align_nodes: {
+    nodeIds: string[];
+    axis: "left" | "right" | "top" | "bottom" | "center-h" | "center-v";
+  };
+  distribute_nodes: {
+    nodeIds: string[];
+    direction: "horizontal" | "vertical";
+  };
+  tidy_up: {
+    nodeIds: string[];
+    axis: "horizontal" | "vertical";
+    spacing?: number;
   };
 
 };
