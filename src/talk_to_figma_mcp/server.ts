@@ -2260,64 +2260,61 @@ styleTool(
   (r: any) => `Set component properties on "${r.name}"`,
 );
 
+// BL-076: passthrough tool helper. Most tools just forward the validated args
+// to the plugin and return the JSON result; this removes the repeated
+// try/catch + JSON.stringify envelope. `buildContent` overrides the default
+// `JSON.stringify(result, null, 2)` output for the few tools that add a summary.
+type ToolTextContent = { type: "text"; text: string };
+function registerPassthroughTool(
+  name: FigmaCommand,
+  description: string,
+  schema: any,
+  errorLabel: string,
+  buildContent?: (result: any) => ToolTextContent[]
+): void {
+  server.tool(name, description, schema, async (args: any) => {
+    try {
+      const result = await sendCommandToFigma(name, args);
+      return {
+        content: buildContent
+          ? buildContent(result)
+          : [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `${errorLabel}: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  });
+}
+
 // Get Component Properties Tool (BL-071)
-server.tool(
+registerPassthroughTool(
   "get_component_properties",
   "Read the current component property values of an instance (instance.componentProperties): each property's type, value, and any bound variable. The read counterpart to set_component_property.",
   {
     instanceId: z.string().describe("ID of the component INSTANCE to read."),
   },
-  async ({ instanceId }: any) => {
-    try {
-      const result = await sendCommandToFigma("get_component_properties", { instanceId });
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error reading component properties: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  }
+  "Error reading component properties",
 );
 
 // Get Component Property Definitions Tool (BL-071)
-server.tool(
+registerPassthroughTool(
   "get_component_property_definitions",
   "Read the component property definitions of a component set or non-variant component: each property's type, default value, and (for VARIANT) the available options / (for INSTANCE_SWAP) preferredValues. Pass a variant component's id and it resolves to its parent set automatically.",
   {
     componentSetId: z.string().describe("ID of the COMPONENT_SET or COMPONENT to read definitions from."),
   },
-  async ({ componentSetId }: any) => {
-    try {
-      const result = await sendCommandToFigma("get_component_property_definitions", { componentSetId });
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error reading component property definitions: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  }
+  "Error reading component property definitions",
 );
 
 // Get Team Libraries Tool (BL-073)
-server.tool(
+registerPassthroughTool(
   "get_team_libraries",
   "List available library variable collections from enabled team libraries (key, name, libraryName). Pass a libraryCollectionKey to instead list the variables in that collection (key, name, resolvedType) — use those keys with import_library_variable. Note: Figma's API does not expose a list of library components; import those by key via import_library_component.",
   {
@@ -2326,29 +2323,11 @@ server.tool(
       .optional()
       .describe("A library variable collection key. Omit to list collections; provide it to list that collection's variables."),
   },
-  async ({ libraryCollectionKey }: any) => {
-    try {
-      const result = await sendCommandToFigma("get_team_libraries", { libraryCollectionKey });
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting team libraries: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  }
+  "Error getting team libraries",
 );
 
 // Import Library Component Tool (BL-073)
-server.tool(
+registerPassthroughTool(
   "import_library_component",
   "Import a published library component by key and, by default, create and place an instance of it. Set createInstance=false to import the main component only. For a component set, import a specific variant's key.",
   {
@@ -2361,99 +2340,43 @@ server.tool(
     y: z.number().optional().describe("Instance Y position (default 0). Only used when creating an instance."),
     parentId: z.string().optional().describe("Parent node to append the instance to. Defaults to the current page."),
   },
-  async ({ componentKey, createInstance, x, y, parentId }: any) => {
-    try {
-      const result = await sendCommandToFigma("import_library_component", {
-        componentKey, createInstance, x, y, parentId,
-      });
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error importing library component: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  }
+  "Error importing library component",
 );
 
 // Import Library Variable Tool (BL-073)
-server.tool(
+registerPassthroughTool(
   "import_library_variable",
   "Import a published library variable by key into the local document (via figma.variables.importVariableByKeyAsync). Get keys from get_team_libraries(libraryCollectionKey). Returns the imported variable's summary.",
   {
     variableKey: z.string().describe("The published variable's key."),
   },
-  async ({ variableKey }: any) => {
-    try {
-      const result = await sendCommandToFigma("import_library_variable", { variableKey });
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error importing library variable: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  }
+  "Error importing library variable",
 );
 
 // Set Mask Tool (BL-074)
-server.tool(
+registerPassthroughTool(
   "set_mask",
   "Toggle a node's mask flag. When isMask is true, the node masks its later siblings within the same parent.",
   {
     nodeId: z.string().describe("ID of the node to set as (or unset from) a mask."),
     isMask: z.boolean().describe("true to make the node a mask, false to clear."),
   },
-  async ({ nodeId, isMask }: any) => {
-    try {
-      const result = await sendCommandToFigma("set_mask", { nodeId, isMask });
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    } catch (error) {
-      return {
-        content: [{ type: "text", text: `Error setting mask: ${error instanceof Error ? error.message : String(error)}` }],
-      };
-    }
-  }
+  "Error setting mask",
 );
 
 // Set Layout Positioning Tool (BL-074)
-server.tool(
+registerPassthroughTool(
   "set_layout_positioning",
   "Set a node's layoutPositioning. ABSOLUTE lets an auto-layout child be positioned freely (ignored by the layout flow); AUTO returns it to the flow. Only meaningful for children of an auto-layout frame.",
   {
     nodeId: z.string().describe("ID of the node (an auto-layout child) to adjust."),
     mode: z.enum(["AUTO", "ABSOLUTE"]).describe("AUTO = follow layout flow; ABSOLUTE = position freely."),
   },
-  async ({ nodeId, mode }: any) => {
-    try {
-      const result = await sendCommandToFigma("set_layout_positioning", { nodeId, mode });
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    } catch (error) {
-      return {
-        content: [{ type: "text", text: `Error setting layout positioning: ${error instanceof Error ? error.message : String(error)}` }],
-      };
-    }
-  }
+  "Error setting layout positioning",
 );
 
 // Create Slice Tool (BL-074)
-server.tool(
+registerPassthroughTool(
   "create_slice",
   "Create a slice (an export region) at the given position and size. Slices define export bounds independent of the nodes beneath them.",
   {
@@ -2464,20 +2387,11 @@ server.tool(
     name: z.string().optional().describe("Slice name."),
     parentId: z.string().optional().describe("Parent to append the slice to. Defaults to the current page."),
   },
-  async ({ x, y, width, height, name, parentId }: any) => {
-    try {
-      const result = await sendCommandToFigma("create_slice", { x, y, width, height, name, parentId });
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    } catch (error) {
-      return {
-        content: [{ type: "text", text: `Error creating slice: ${error instanceof Error ? error.message : String(error)}` }],
-      };
-    }
-  }
+  "Error creating slice",
 );
 
 // Figma Notify Tool (BL-074)
-server.tool(
+registerPassthroughTool(
   "figma_notify",
   "Show a transient toast notification in the Figma UI (figma.notify). Useful for surfacing progress or status to the user at the canvas.",
   {
@@ -2490,36 +2404,18 @@ server.tool(
       .optional()
       .describe("Notification options."),
   },
-  async ({ message, options }: any) => {
-    try {
-      const result = await sendCommandToFigma("figma_notify", { message, options });
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    } catch (error) {
-      return {
-        content: [{ type: "text", text: `Error showing notification: ${error instanceof Error ? error.message : String(error)}` }],
-      };
-    }
-  }
+  "Error showing notification",
 );
 
 // Measure Distance Tool (BL-074)
-server.tool(
+registerPassthroughTool(
   "measure_distance",
   "Measure the spatial relationship between two nodes' absolute bounding boxes: center-to-center delta and distance, plus the edge-to-edge gap on each axis (0 when the boxes overlap on that axis). Equivalent to Figma's Measure tool.",
   {
     nodeIdA: z.string().describe("First node id."),
     nodeIdB: z.string().describe("Second node id."),
   },
-  async ({ nodeIdA, nodeIdB }: any) => {
-    try {
-      const result = await sendCommandToFigma("measure_distance", { nodeIdA, nodeIdB });
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    } catch (error) {
-      return {
-        content: [{ type: "text", text: `Error measuring distance: ${error instanceof Error ? error.message : String(error)}` }],
-      };
-    }
-  }
+  "Error measuring distance",
 );
 
 // -------------------------------------------------------------------
@@ -3448,7 +3344,7 @@ server.tool(
 );
 
 // Find Nodes By Criteria Tool (BL-069)
-server.tool(
+registerPassthroughTool(
   "find_nodes_by_criteria",
   "Find nodes anywhere in a subtree by type and/or name. Unlike scan_nodes_by_types, this also filters by name (case-insensitive substring, or a regex). Searches descendants of rootId, or the current page when rootId is omitted. At least one of `types` or `namePattern` must be given.",
   {
@@ -3473,46 +3369,18 @@ server.tool(
       .optional()
       .describe("Include hidden nodes and descendants of hidden nodes. Default false."),
   },
-  async ({ rootId, types, namePattern, regex, includeHidden }: any) => {
-    try {
-      const result = await sendCommandToFigma("find_nodes_by_criteria", {
-        rootId,
-        types,
-        namePattern,
-        regex,
-        includeHidden,
-      });
-      const typedResult = result as {
-        count: number;
-        matchingNodes: unknown[];
-      };
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Found ${typedResult.count} matching node(s).`,
-          },
-          {
-            type: "text" as const,
-            text: JSON.stringify(typedResult.matchingNodes, null, 2),
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error finding nodes: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  }
+  "Error finding nodes",
+  (result) => {
+    const r = result as { count: number; matchingNodes: unknown[] };
+    return [
+      { type: "text", text: `Found ${r.count} matching node(s).` },
+      { type: "text", text: JSON.stringify(r.matchingNodes, null, 2) },
+    ];
+  },
 );
 
 // Find Node By Name Tool (BL-069)
-server.tool(
+registerPassthroughTool(
   "find_node_by_name",
   "Find the first node whose name matches, anywhere in a subtree. Returns a single node summary or a not-found result. Searches descendants of rootId, or the current page when rootId is omitted.",
   {
@@ -3526,36 +3394,11 @@ server.tool(
       .optional()
       .describe("Require an exact, case-sensitive name match. Default false = case-insensitive substring."),
   },
-  async ({ name, rootId, exact }: any) => {
-    try {
-      const result = await sendCommandToFigma("find_node_by_name", {
-        name,
-        rootId,
-        exact,
-      });
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error finding node: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  }
+  "Error finding node",
 );
 
 // List Available Fonts Tool (BL-072)
-server.tool(
+registerPassthroughTool(
   "list_available_fonts",
   "List fonts available in the current Figma environment, grouped by family with their styles. The full catalog is large (1000+ families), so pass a searchPattern to narrow it; results are capped (default 50 families) and a `truncated` flag is set when more match. Useful before text work to confirm a font exists.",
   {
@@ -3570,80 +3413,40 @@ server.tool(
       .optional()
       .describe("Max number of families to return (default 50). Narrow with searchPattern instead of raising this for large results."),
   },
-  async ({ searchPattern, limit }: any) => {
-    try {
-      const result = await sendCommandToFigma("list_available_fonts", { searchPattern, limit });
-      const typedResult = result as {
-        count: number;
-        totalFamilies: number;
-        totalFonts: number;
-        truncated: boolean;
-        fonts: unknown[];
-      };
-      const famWord = typedResult.totalFamilies === 1 ? "family" : "families";
-      const styleWord = typedResult.totalFonts === 1 ? "style" : "styles";
-      const summary = typedResult.truncated
-        ? `Found ${typedResult.totalFamilies} font ${famWord} (${typedResult.totalFonts} ${styleWord}); showing first ${typedResult.count}. Narrow with searchPattern or raise limit.`
-        : `Found ${typedResult.totalFamilies} font ${famWord} (${typedResult.totalFonts} ${styleWord}).`;
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: summary,
-          },
-          {
-            type: "text" as const,
-            text: JSON.stringify(typedResult.fonts),
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error listing fonts: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  }
+  "Error listing fonts",
+  (result) => {
+    const r = result as {
+      count: number;
+      totalFamilies: number;
+      totalFonts: number;
+      truncated: boolean;
+      fonts: unknown[];
+    };
+    const famWord = r.totalFamilies === 1 ? "family" : "families";
+    const styleWord = r.totalFonts === 1 ? "style" : "styles";
+    const summary = r.truncated
+      ? `Found ${r.totalFamilies} font ${famWord} (${r.totalFonts} ${styleWord}); showing first ${r.count}. Narrow with searchPattern or raise limit.`
+      : `Found ${r.totalFamilies} font ${famWord} (${r.totalFonts} ${styleWord}).`;
+    return [
+      { type: "text", text: summary },
+      { type: "text", text: JSON.stringify(r.fonts) },
+    ];
+  },
 );
 
 // Load Font Tool (BL-072)
-server.tool(
+registerPassthroughTool(
   "load_font",
   "Explicitly load a font (family + style) so it is ready for text operations. Text tools load fonts automatically, but prefetching is faster for batch work. Errors if the font is not available.",
   {
     family: z.string().describe("Font family, e.g. 'Inter'."),
     style: z.string().describe("Font style, e.g. 'Regular', 'Bold', 'Medium'."),
   },
-  async ({ family, style }: any) => {
-    try {
-      const result = await sendCommandToFigma("load_font", { family, style });
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error loading font: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  }
+  "Error loading font",
 );
 
 // Align Nodes Tool (BL-070)
-server.tool(
+registerPassthroughTool(
   "align_nodes",
   "Align multiple nodes to a shared edge or center of their combined bounding box, like Figma's Align buttons. Works across different (axis-aligned) parents on the current page. Nodes are skipped (and reported in `skipped`) if they are managed by a parent auto-layout, not on the current page, or under a rotated/scaled parent.",
   {
@@ -3652,29 +3455,11 @@ server.tool(
       .enum(["left", "right", "top", "bottom", "center-h", "center-v"])
       .describe("left/right/center-h move along X; top/bottom/center-v move along Y."),
   },
-  async ({ nodeIds, axis }: any) => {
-    try {
-      const result = await sendCommandToFigma("align_nodes", { nodeIds, axis });
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error aligning nodes: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  }
+  "Error aligning nodes",
 );
 
 // Distribute Nodes Tool (BL-070)
-server.tool(
+registerPassthroughTool(
   "distribute_nodes",
   "Distribute 3+ nodes so the gaps between them are equal along the given direction, like Figma's Distribute spacing. The first and last nodes stay put. Nodes are skipped (and reported in `skipped`) if they are managed by a parent auto-layout, not on the current page, or under a rotated/scaled parent.",
   {
@@ -3683,29 +3468,11 @@ server.tool(
       .enum(["horizontal", "vertical"])
       .describe("Axis along which to equalize spacing."),
   },
-  async ({ nodeIds, direction }: any) => {
-    try {
-      const result = await sendCommandToFigma("distribute_nodes", { nodeIds, direction });
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error distributing nodes: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  }
+  "Error distributing nodes",
 );
 
 // Tidy Up Tool (BL-070)
-server.tool(
+registerPassthroughTool(
   "tidy_up",
   "Pack nodes into a single row (horizontal) or column (vertical) with uniform spacing, ordered by their current position and aligned on the cross-axis. Nodes are skipped (and reported in `skipped`) if they are managed by a parent auto-layout, not on the current page, or under a rotated/scaled parent.",
   {
@@ -3718,25 +3485,7 @@ server.tool(
       .optional()
       .describe("Gap between nodes in pixels. Default 0."),
   },
-  async ({ nodeIds, axis, spacing }: any) => {
-    try {
-      const result = await sendCommandToFigma("tidy_up", { nodeIds, axis, spacing });
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error tidying nodes: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
-    }
-  }
+  "Error tidying nodes",
 );
 
 // Text Replacement Strategy Prompt
