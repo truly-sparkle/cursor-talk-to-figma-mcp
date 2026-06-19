@@ -4895,33 +4895,6 @@ type CommandParams = {
 };
 
 
-// Helper function to process Figma node responses
-function processFigmaNodeResponse(result: unknown): any {
-  if (!result || typeof result !== "object") {
-    return result;
-  }
-
-  // Check if this looks like a node response
-  const resultObj = result as Record<string, unknown>;
-  if ("id" in resultObj && typeof resultObj.id === "string") {
-    // It appears to be a node response, log the details
-    console.info(
-      `Processed Figma node: ${resultObj.name || "Unknown"} (ID: ${resultObj.id
-      })`
-    );
-
-    if ("x" in resultObj && "y" in resultObj) {
-      console.debug(`Node position: (${resultObj.x}, ${resultObj.y})`);
-    }
-
-    if ("width" in resultObj && "height" in resultObj) {
-      console.debug(`Node dimensions: ${resultObj.width}×${resultObj.height}`);
-    }
-  }
-
-  return result;
-}
-
 // Update the connectToFigma function
 function connectToFigma(port: number = 3055) {
   // If already connected, do nothing
