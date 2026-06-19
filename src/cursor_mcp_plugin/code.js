@@ -520,6 +520,16 @@ async function handleCommand(command, params) {
       return await importLibraryComponent(params);
     case "import_library_variable":
       return await importLibraryVariable(params);
+    case "set_mask":
+      return await setMask(params);
+    case "set_layout_positioning":
+      return await setLayoutPositioning(params);
+    case "create_slice":
+      return await createSlice(params);
+    case "figma_notify":
+      return await figmaNotify(params);
+    case "measure_distance":
+      return await measureDistance(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -3385,6 +3395,148 @@ async function importLibraryVariable(params) {
   }
 
   return { success: true, variable: summarizeVariable(variable) };
+}
+
+// ===== BL-074: Misc tools (mask · layout positioning · slice · notify · measure) =====
+
+/** Toggle a node's mask flag (the node masks its later siblings within the parent). */
+async function setMask(params) {
+  const p = params || {};
+  const nodeId = p.nodeId;
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (typeof p.isMask !== "boolean") throw new Error("'isMask' must be a boolean");
+
+  const node = await getMutableNode(nodeId);
+  if (!("isMask" in node)) {
+    throw new Error(`Node does not support masking: ${nodeId} (${node.type})`);
+  }
+  node.isMask = p.isMask;
+  return { id: node.id, name: node.name, isMask: node.isMask };
+}
+
+/**
+ * Set a node's layoutPositioning (AUTO | ABSOLUTE). ABSOLUTE lets an auto-layout
+ * child be positioned freely (ignored by the layout flow). Only meaningful when
+ * the parent is an auto-layout frame.
+ */
+async function setLayoutPositioning(params) {
+  const p = params || {};
+  const nodeId = p.nodeId;
+  const mode = p.mode;
+  if (!nodeId) throw new Error("Missing nodeId");
+  if (mode !== "AUTO" && mode !== "ABSOLUTE") {
+    throw new Error('mode must be "AUTO" or "ABSOLUTE"');
+  }
+
+  const node = await getMutableNode(nodeId);
+  if (!("layoutPositioning" in node)) {
+    throw new Error(`Node does not support layoutPositioning: ${nodeId} (${node.type})`);
+  }
+  node.layoutPositioning = mode;
+
+  const parent = node.parent;
+  const parentIsAutoLayout = parent && "layoutMode" in parent && parent.layoutMode !== "NONE";
+  return {
+    id: node.id,
+    name: node.name,
+    layoutPositioning: node.layoutPositioning,
+    note: parentIsAutoLayout ? undefined : "parent is not an auto-layout frame; layoutPositioning has no effect until it is",
+  };
+}
+
+/** Create a slice (export region) at x/y with the given size. */
+async function createSlice(params) {
+  const p = params || {};
+  const x = typeof p.x === "number" ? p.x : 0;
+  const y = typeof p.y === "number" ? p.y : 0;
+  const width = typeof p.width === "number" ? p.width : 100;
+  const height = typeof p.height === "number" ? p.height : 100;
+  if (width <= 0 || height <= 0) {
+    throw new Error("width and height must be positive");
+  }
+
+  const slice = figma.createSlice();
+  slice.x = x;
+  slice.y = y;
+  slice.resize(width, height);
+  if (p.name) slice.name = p.name;
+
+  if (p.parentId) {
+    const parent = await figma.getNodeByIdAsync(p.parentId);
+    if (parent && "appendChild" in parent) parent.appendChild(slice);
+    else figma.currentPage.appendChild(slice);
+  } else {
+    figma.currentPage.appendChild(slice);
+  }
+
+  return { id: slice.id, name: slice.name, x: slice.x, y: slice.y, width: slice.width, height: slice.height };
+}
+
+/** Show a toast notification in the Figma UI. */
+async function figmaNotify(params) {
+  const p = params || {};
+  const message = p.message;
+  if (typeof message !== "string" || message.length === 0) {
+    throw new Error("'message' must be a non-empty string");
+  }
+
+  const options = {};
+  if (p.options && typeof p.options === "object") {
+    if (typeof p.options.timeout === "number") options.timeout = p.options.timeout;
+    if (p.options.error === true) options.error = true;
+  }
+  figma.notify(message, options);
+  return { success: true, message: message };
+}
+
+/**
+ * Measure the spatial relationship between two nodes' absolute bounding boxes:
+ * center-to-center delta/distance and the edge-to-edge gap on each axis (0 when
+ * the boxes overlap on that axis). Equivalent to Figma's Measure tool.
+ */
+async function measureDistance(params) {
+  const p = params || {};
+  const nodeIdA = p.nodeIdA;
+  const nodeIdB = p.nodeIdB;
+  if (!nodeIdA || !nodeIdB) throw new Error("Both nodeIdA and nodeIdB are required");
+
+  const a = await figma.getNodeByIdAsync(nodeIdA);
+  if (!a) throw new Error(`Node not found: ${nodeIdA}`);
+  const b = await figma.getNodeByIdAsync(nodeIdB);
+  if (!b) throw new Error(`Node not found: ${nodeIdB}`);
+
+  if (!("absoluteBoundingBox" in a) || !a.absoluteBoundingBox) {
+    throw new Error(`Node has no bounding box: ${nodeIdA} (${a.type})`);
+  }
+  if (!("absoluteBoundingBox" in b) || !b.absoluteBoundingBox) {
+    throw new Error(`Node has no bounding box: ${nodeIdB} (${b.type})`);
+  }
+
+  const ba = a.absoluteBoundingBox;
+  const bb = b.absoluteBoundingBox;
+  const aRight = ba.x + ba.width, aBottom = ba.y + ba.height;
+  const bRight = bb.x + bb.width, bBottom = bb.y + bb.height;
+
+  const dx = (bb.x + bb.width / 2) - (ba.x + ba.width / 2);
+  const dy = (bb.y + bb.height / 2) - (ba.y + ba.height / 2);
+  const centerDistance = Math.sqrt(dx * dx + dy * dy);
+
+  let horizontalGap = 0;
+  if (bb.x >= aRight) horizontalGap = bb.x - aRight;
+  else if (ba.x >= bRight) horizontalGap = ba.x - bRight;
+
+  let verticalGap = 0;
+  if (bb.y >= aBottom) verticalGap = bb.y - aBottom;
+  else if (ba.y >= bBottom) verticalGap = ba.y - bBottom;
+
+  return {
+    a: { id: a.id, name: a.name, bbox: ba },
+    b: { id: b.id, name: b.name, bbox: bb },
+    centerDelta: { dx: dx, dy: dy },
+    centerDistance: centerDistance,
+    horizontalGap: horizontalGap,
+    verticalGap: verticalGap,
+  };
 }
 
 // BL-025: format/constraint extended. PNG/JPG support raster constraints

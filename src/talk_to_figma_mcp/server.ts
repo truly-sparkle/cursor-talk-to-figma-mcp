@@ -2412,6 +2412,116 @@ server.tool(
   }
 );
 
+// Set Mask Tool (BL-074)
+server.tool(
+  "set_mask",
+  "Toggle a node's mask flag. When isMask is true, the node masks its later siblings within the same parent.",
+  {
+    nodeId: z.string().describe("ID of the node to set as (or unset from) a mask."),
+    isMask: z.boolean().describe("true to make the node a mask, false to clear."),
+  },
+  async ({ nodeId, isMask }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_mask", { nodeId, isMask });
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error setting mask: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+// Set Layout Positioning Tool (BL-074)
+server.tool(
+  "set_layout_positioning",
+  "Set a node's layoutPositioning. ABSOLUTE lets an auto-layout child be positioned freely (ignored by the layout flow); AUTO returns it to the flow. Only meaningful for children of an auto-layout frame.",
+  {
+    nodeId: z.string().describe("ID of the node (an auto-layout child) to adjust."),
+    mode: z.enum(["AUTO", "ABSOLUTE"]).describe("AUTO = follow layout flow; ABSOLUTE = position freely."),
+  },
+  async ({ nodeId, mode }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_layout_positioning", { nodeId, mode });
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error setting layout positioning: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+// Create Slice Tool (BL-074)
+server.tool(
+  "create_slice",
+  "Create a slice (an export region) at the given position and size. Slices define export bounds independent of the nodes beneath them.",
+  {
+    x: z.number().optional().describe("X position (default 0)."),
+    y: z.number().optional().describe("Y position (default 0)."),
+    width: z.number().positive().optional().describe("Width (default 100, must be positive)."),
+    height: z.number().positive().optional().describe("Height (default 100, must be positive)."),
+    name: z.string().optional().describe("Slice name."),
+    parentId: z.string().optional().describe("Parent to append the slice to. Defaults to the current page."),
+  },
+  async ({ x, y, width, height, name, parentId }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_slice", { x, y, width, height, name, parentId });
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error creating slice: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+// Figma Notify Tool (BL-074)
+server.tool(
+  "figma_notify",
+  "Show a transient toast notification in the Figma UI (figma.notify). Useful for surfacing progress or status to the user at the canvas.",
+  {
+    message: z.string().describe("The message to display."),
+    options: z
+      .object({
+        timeout: z.number().optional().describe("Auto-dismiss after this many milliseconds."),
+        error: z.boolean().optional().describe("Style as an error toast."),
+      })
+      .optional()
+      .describe("Notification options."),
+  },
+  async ({ message, options }: any) => {
+    try {
+      const result = await sendCommandToFigma("figma_notify", { message, options });
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error showing notification: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+// Measure Distance Tool (BL-074)
+server.tool(
+  "measure_distance",
+  "Measure the spatial relationship between two nodes' absolute bounding boxes: center-to-center delta and distance, plus the edge-to-edge gap on each axis (0 when the boxes overlap on that axis). Equivalent to Figma's Measure tool.",
+  {
+    nodeIdA: z.string().describe("First node id."),
+    nodeIdB: z.string().describe("Second node id."),
+  },
+  async ({ nodeIdA, nodeIdB }: any) => {
+    try {
+      const result = await sendCommandToFigma("measure_distance", { nodeIdA, nodeIdB });
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error measuring distance: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
 // -------------------------------------------------------------------
 
 // Set Stroke Color Tool
@@ -4332,7 +4442,12 @@ type FigmaCommand =
   | "tidy_up"
   | "get_team_libraries"
   | "import_library_component"
-  | "import_library_variable";
+  | "import_library_variable"
+  | "set_mask"
+  | "set_layout_positioning"
+  | "create_slice"
+  | "figma_notify"
+  | "measure_distance";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4751,6 +4866,30 @@ type CommandParams = {
   };
   import_library_variable: {
     variableKey: string;
+  };
+  set_mask: {
+    nodeId: string;
+    isMask: boolean;
+  };
+  set_layout_positioning: {
+    nodeId: string;
+    mode: "AUTO" | "ABSOLUTE";
+  };
+  create_slice: {
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    name?: string;
+    parentId?: string;
+  };
+  figma_notify: {
+    message: string;
+    options?: { timeout?: number; error?: boolean };
+  };
+  measure_distance: {
+    nodeIdA: string;
+    nodeIdB: string;
   };
 
 };
