@@ -3235,6 +3235,25 @@ async function getLocalComponents(params) {
 //   }
 // }
 
+/**
+ * Create an instance of a component and place it at (x, y) under parentId, or
+ * the current page when parentId is missing/invalid. Shared by
+ * create_component_instance and import_library_component (BL-077).
+ */
+async function placeNewInstance(component, x, y, parentId) {
+  const instance = component.createInstance();
+  instance.x = typeof x === "number" ? x : 0;
+  instance.y = typeof y === "number" ? y : 0;
+  if (parentId) {
+    const parent = await figma.getNodeByIdAsync(parentId);
+    if (parent && "appendChild" in parent) parent.appendChild(instance);
+    else figma.currentPage.appendChild(instance);
+  } else {
+    figma.currentPage.appendChild(instance);
+  }
+  return instance;
+}
+
 async function createComponentInstance(params) {
   const { componentKey, componentId, x = 0, y = 0, parentId } = params || {};
 
@@ -3260,20 +3279,7 @@ async function createComponentInstance(params) {
       component = await figma.importComponentByKeyAsync(componentKey);
     }
 
-    const instance = component.createInstance();
-    instance.x = x;
-    instance.y = y;
-
-    if (parentId) {
-      const parent = await figma.getNodeByIdAsync(parentId);
-      if (parent && "appendChild" in parent) {
-        parent.appendChild(instance);
-      } else {
-        figma.currentPage.appendChild(instance);
-      }
-    } else {
-      figma.currentPage.appendChild(instance);
-    }
+    const instance = await placeNewInstance(component, x, y, parentId);
 
     const mainComponent = await instance.getMainComponentAsync();
 
@@ -3355,17 +3361,7 @@ async function importLibraryComponent(params) {
     return result;
   }
 
-  const instance = main.createInstance();
-  instance.x = typeof p.x === "number" ? p.x : 0;
-  instance.y = typeof p.y === "number" ? p.y : 0;
-
-  if (p.parentId) {
-    const parent = await figma.getNodeByIdAsync(p.parentId);
-    if (parent && "appendChild" in parent) parent.appendChild(instance);
-    else figma.currentPage.appendChild(instance);
-  } else {
-    figma.currentPage.appendChild(instance);
-  }
+  const instance = await placeNewInstance(main, p.x, p.y, p.parentId);
 
   result.instanceCreated = true;
   result.instanceId = instance.id;

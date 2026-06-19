@@ -2329,7 +2329,7 @@ registerPassthroughTool(
 // Import Library Component Tool (BL-073)
 registerPassthroughTool(
   "import_library_component",
-  "Import a published library component by key and, by default, create and place an instance of it. Set createInstance=false to import the main component only. For a component set, import a specific variant's key.",
+  "Import a published library component by key and, by default, create and place an instance of it. Set createInstance=false to import the main component only (returns the main component id). For a component set, import a specific variant's key. Note: create_component_instance also instantiates a published component by key in one step — prefer this tool when you need import-only (createInstance=false) or the main component id.",
   {
     componentKey: z.string().describe("The published component's key."),
     createInstance: z
