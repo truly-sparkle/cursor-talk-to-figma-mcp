@@ -35,6 +35,7 @@ The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. E
 - Variables (design tokens): create_variable_collection, create_variable, set_variable_value, add/rename/remove_variable_mode, set_variable_alias
 - Styles: create_paint/text/effect/grid_style, apply_style, rename_style, delete_style
 - Export & misc: export_node_as_image, scan_text_nodes, scan_nodes_by_types, set_focus, set_selections
+- **Batch: `batch_commands`** — run an ordered list of any commands in ONE round trip; a later op can reference a node an earlier op created via `"$ref:<name>"` in any param (see Throughput below). The fast path for building multi-element designs.
 
 Server-side response shaping was removed (BL-060) — plugin's `filterFigmaNode` is the single source of truth. Server is a raw passthrough.
 
@@ -54,10 +55,34 @@ Runs inside Figma. `code.js` is the plugin main thread handling 80+ commands via
 
 - **Colors**: Figma uses RGBA 0-1 range. Plugin's `rgbaToHex` (with `channelToByte` clamp helper, BL-061) handles all color → hex conversion before sending responses.
 - **Logging**: Server logs go to stderr (stdout reserved for MCP protocol). Plugin uses `Log.{debug,info,warn,error}` helper (BL-038) — new code should use this seam, not `console.*` directly.
-- **Timeouts** (BL-007): per-command policy. Default 30s, "long-running" commands (scans, batch ops, exports, instance overrides) start at 5min. Progress updates re-arm a 2min inactivity timer. Override via `FIGMA_TIMEOUT_MS`, `FIGMA_LONG_TIMEOUT_MS`, `FIGMA_INACTIVITY_TIMEOUT_MS` env vars.
+- **Timeouts** (BL-007): per-command policy. Default 30s, "long-running" commands (scans, batch ops, exports, instance overrides, `get_node_info`, `batch_commands`) start at 5min. Progress updates re-arm a 2min inactivity timer. Override via `FIGMA_TIMEOUT_MS`, `FIGMA_LONG_TIMEOUT_MS`, `FIGMA_INACTIVITY_TIMEOUT_MS` env vars.
+- **No WebSocket keepalive is needed and none should be added.** Bun's `Bun.serve` websocket defaults `sendPings:true`, so the relay pings idle clients and RFC-6455 clients auto-pong in the network stack (not JS timers) — a connection survives multi-minute model think-pauses even though nothing app-level is sent. Verified empirically on bun 1.3.13: a silent connection stayed open well past the 120s `idleTimeout`. Idle-timeout is a *dead-peer detector*, not a silence killer. The pipeline is loopback-only (plugin manifest allows only `ws://localhost:3055`), so half-open sockets don't occur either. Stalls came from app-level bugs (dead channels, unsettled null results, wrong-request progress re-arm), not connection death.
 - **Chunking**: Large operations (scanning 100+ nodes) are chunked with progress updates to prevent Figma UI freezing. Cycle-guarded with visited Set (BL-029).
-- **Reconnection** (BL-042): exponential backoff (2s → 30s, max 10 attempts). Last-active channel auto-rejoined on reconnect.
+- **Reconnection** (BL-042): exponential backoff (2s → 30s, max 30 attempts). Last-active channel auto-rejoined on reconnect. During a reconnect, outbound commands are **queued** (not rejected) and flushed after the rejoin is acked, so a blip no longer fails the in-flight call. The **plugin UI now auto-reconnects too** and **reuses the same channel** across reconnects (it used to mint a new random channel, leaving the server talking to a dead channel). Relay-side rejections (not-joined, zero-peer) carry the request id so the server fails them **fast** instead of hanging 30s.
 - **Zod validation**: All tool parameters are validated with Zod schemas.
+
+### Throughput: building complex designs without stalls ⚡
+
+Element-by-element construction is what makes complex pages time out — a realistic detail
+page is ~120 sequential tool calls, each a full model-turn + stdio + WS + plugin hop. Prefer,
+in order:
+
+1. **`batch_commands`** — collapse many creates/mutations into ONE call. Each entry is
+   `{command, params, ref?}`; put `"$ref:<name>"` in any param to reference a node an earlier
+   entry created (e.g. `parentId: "$ref:card"`). It streams progress every 5 ops, so it also
+   re-arms the inactivity timer — a 100-op batch is *more* timeout-robust than 100 separate
+   30s-deadline calls. It's in `LONG_RUNNING_COMMANDS` (5-min budget). Failures are per-op by
+   default (`stopOnError:false`); the result carries `{results:[{index,success,result|error}], refs}`.
+2. **Inline styling params on the create tools** — `create_rectangle` (fillColor/strokeColor/
+   strokeWeight/cornerRadius), `create_ellipse` (fill/stroke), `create_frame` (cornerRadius/
+   opacity, on top of its existing fills/auto-layout), `create_text` (fontFamily/fontStyle/width/
+   textAutoResize/textAlignHorizontal/letterSpacing/lineHeight). One call instead of create +
+   several `set_*`. Note the createFrame FILL/HUG sizing now applies **after** appendChild and is
+   gated on the *parent* being auto-layout.
+3. **Repeated-elements recipe (no new tools)** — build ONE template element, then
+   `clone_node` per copy, then a single `scan_text_nodes` over the container, then ONE
+   `set_multiple_text_contents` to rewrite every text node across all clones. Turns e.g. 3 review
+   cards from ~33 calls into ~15, and both batch tools stream progress so they don't time out.
 
 ### Figma plugin runtime ES compatibility ⚠️
 

@@ -40,24 +40,26 @@ function safeEqual(a: string, b: string): boolean {
 // reduce the chance of accidental cross-channel collisions.
 const CHANNEL_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 
-function rejectChannelName(ws: ServerWebSocket<any>, reason: string): void {
+function rejectChannelName(ws: ServerWebSocket<any>, reason: string, id?: unknown): void {
   ws.send(JSON.stringify({
     type: "error",
+    id,
     message: reason,
   }));
 }
 
 // Returns true if the channel name passes validation, false (and replies
 // with an error) otherwise.
-function validateChannelName(ws: ServerWebSocket<any>, name: unknown): name is string {
+function validateChannelName(ws: ServerWebSocket<any>, name: unknown, id?: unknown): name is string {
   if (typeof name !== "string" || name.length === 0) {
-    rejectChannelName(ws, "Channel name is required");
+    rejectChannelName(ws, "Channel name is required", id);
     return false;
   }
   if (!CHANNEL_NAME_RE.test(name)) {
     rejectChannelName(
       ws,
-      "Invalid channel name (allowed: 1-64 chars, [a-zA-Z0-9_-])"
+      "Invalid channel name (allowed: 1-64 chars, [a-zA-Z0-9_-])",
+      id
     );
     return false;
   }
@@ -91,11 +93,20 @@ function handleDisconnect(ws: ServerWebSocket<any>) {
         }));
       }
     });
+
+    // Drop now-empty channels so the Map doesn't grow unbounded — the plugin
+    // mints a new random channel name on every reconnect.
+    if (clients.size === 0) {
+      channels.delete(channelName);
+    }
   });
 }
 
 const server = Bun.serve({
-  port: 3055,
+  port: parseInt(process.env.PORT || "3055", 10) || 3055,
+  // Bun's default maxPayloadLength is 16MB; large export_node_as_image base64
+  // responses can exceed it and get the socket killed. Raise to 256MB.
+  maxPayloadLength: 256 * 1024 * 1024,
   // uncomment this to allow connections in windows wsl
   // hostname: "0.0.0.0",
   fetch(req: Request, server: Server) {
@@ -149,7 +160,7 @@ const server = Bun.serve({
 
         if (data.type === "join") {
           const channelName = data.channel;
-          if (!validateChannelName(ws, channelName)) return;
+          if (!validateChannelName(ws, channelName, data.id)) return;
 
           // Optional token check (BL-005). Only enforced when the env var
           // is set, so default behavior is unchanged.
@@ -158,11 +169,23 @@ const server = Bun.serve({
             if (!safeEqual(provided, REQUIRED_TOKEN)) {
               ws.send(JSON.stringify({
                 type: "error",
+                id: data.id,
                 message: "Invalid or missing relay token",
               }));
               return;
             }
           }
+
+          // Single-channel membership: drop this ws from any other channel it
+          // may already be in before joining the target. Prevents cross-channel
+          // leakage and stale membership after the plugin re-joins under a new
+          // random channel name.
+          channels.forEach((clients, otherName) => {
+            if (otherName === channelName) return;
+            if (clients.delete(ws) && clients.size === 0) {
+              channels.delete(otherName);
+            }
+          });
 
           // Create channel if it doesn't exist
           if (!channels.has(channelName)) {
@@ -207,12 +230,13 @@ const server = Bun.serve({
         // Handle regular messages
         if (data.type === "message") {
           const channelName = data.channel;
-          if (!validateChannelName(ws, channelName)) return;
+          if (!validateChannelName(ws, channelName, data.id)) return;
 
           const channelClients = channels.get(channelName);
           if (!channelClients || !channelClients.has(ws)) {
             ws.send(JSON.stringify({
               type: "error",
+              id: data.id,
               message: "You must join the channel first"
             }));
             return;
@@ -237,6 +261,13 @@ const server = Bun.serve({
           
           if (broadcastCount === 0) {
             console.log(`⚠️  No other clients in channel "${channelName}" to receive message!`);
+            // Signal the sender so it fails fast instead of waiting for the
+            // command to time out (CONTRACT item B).
+            ws.send(JSON.stringify({
+              type: "error",
+              id: data.id,
+              message: 'No peer in channel "' + channelName + '" — is the Figma plugin running and joined to this channel?'
+            }));
           } else {
             console.log(`✓ Broadcast to ${broadcastCount} peer(s) in channel "${channelName}"`);
           }

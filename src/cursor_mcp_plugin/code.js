@@ -113,6 +113,38 @@ figma.showUI(__html__, { width: 350, height: 600 });
   }
 })();
 
+// ---- Command serialization (BL) -----------------------------------
+// Pipelined MCP calls arrive concurrently; running them in parallel lets
+// their mutations and progress updates interleave. Serialize with a
+// promise-chain queue so only ONE command runs at a time. runOneCommand
+// NEVER rejects (it catches internally) so a failing command can't break
+// the chain for the next one.
+var commandQueue = Promise.resolve();
+
+async function runOneCommand(msg) {
+  try {
+    const result = await handleCommand(msg.command, msg.params);
+    figma.ui.postMessage({
+      type: "command-result",
+      id: msg.id,
+      result,
+    });
+  } catch (error) {
+    figma.ui.postMessage({
+      type: "command-error",
+      id: msg.id,
+      error: error.message || "Error executing command",
+    });
+  } finally {
+    // Drop any cancellation flag for this command's id to avoid unbounded
+    // growth. The server stamps params.commandId with its own request id,
+    // which is what cancel_command's cancelId targets.
+    if (msg.params && msg.params.commandId) {
+      clearCancelled(msg.params.commandId);
+    }
+  }
+}
+
 // Plugin commands from UI
 figma.ui.onmessage = async (msg) => {
   switch (msg.type) {
@@ -126,21 +158,30 @@ figma.ui.onmessage = async (msg) => {
       figma.closePlugin();
       break;
     case "execute-command":
-      // Execute commands received from UI (which gets them from WebSocket)
-      try {
-        const result = await handleCommand(msg.command, msg.params);
-        figma.ui.postMessage({
-          type: "command-result",
-          id: msg.id,
-          result,
-        });
-      } catch (error) {
-        figma.ui.postMessage({
-          type: "command-error",
-          id: msg.id,
-          error: error.message || "Error executing command",
-        });
+      // cancel_command must bypass the serialization queue so a cancel can
+      // take effect while a long command is still running in the queue.
+      if (msg.command === "cancel_command") {
+        try {
+          const cancelResult = await handleCommand(msg.command, msg.params);
+          figma.ui.postMessage({
+            type: "command-result",
+            id: msg.id,
+            result: cancelResult,
+          });
+        } catch (error) {
+          figma.ui.postMessage({
+            type: "command-error",
+            id: msg.id,
+            error: error.message || "Error executing command",
+          });
+        }
+        break;
       }
+      // Execute commands received from UI (which gets them from WebSocket).
+      // Chained onto commandQueue so commands run one at a time.
+      commandQueue = commandQueue.then(function () {
+        return runOneCommand(msg);
+      });
       break;
   }
 };
@@ -443,6 +484,11 @@ async function handleCommand(command, params) {
       return await createStar(params);
     case "create_vector":
       return await createVector(params);
+    case "cancel_command":
+      markCancelled(params && params.cancelId);
+      return { cancelled: true };
+    case "batch_commands":
+      return await executeBatch(params);
     case "create_section":
       return await createSection(params);
     case "create_component":
@@ -491,7 +537,7 @@ async function handleCommand(command, params) {
       if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
         throw new Error("Missing or invalid nodeIds parameter");
       }
-      return await getReactions(params.nodeIds);  
+      return await getReactions(params.nodeIds, params.commandId);
     case "set_default_connector":
       return await setDefaultConnector(params);
     case "create_connections":
@@ -645,7 +691,10 @@ function processPaint(paint) {
 
 function filterFigmaNode(node) {
   if (node.type === "VECTOR") {
-    return null;
+    // Return a minimal identity stub instead of null so vector nodes still
+    // carry id/name/type. Full vectorPaths/geometry are intentionally
+    // omitted to keep the payload small.
+    return { id: node.id, name: node.name, type: node.type };
   }
 
   var filtered = {
@@ -746,9 +795,9 @@ async function getNodesInfo(nodeIds) {
   }
 }
 
-async function getReactions(nodeIds) {
+async function getReactions(nodeIds, suppliedCommandId) {
   try {
-    const commandId = generateCommandId();
+    const commandId = suppliedCommandId || generateCommandId();
     sendProgressUpdate(
       commandId,
       "get_reactions",
@@ -968,6 +1017,10 @@ async function createRectangle(params) {
     height = 100,
     name = "Rectangle",
     parentId,
+    fillColor,
+    strokeColor,
+    strokeWeight,
+    cornerRadius,
   } = params || {};
 
   const rect = figma.createRectangle();
@@ -975,6 +1028,44 @@ async function createRectangle(params) {
   rect.y = y;
   rect.resize(width, height);
   rect.name = name;
+
+  // Set fill color if provided
+  if (fillColor) {
+    const paintStyle = {
+      type: "SOLID",
+      color: {
+        r: parseFloat(fillColor.r) || 0,
+        g: parseFloat(fillColor.g) || 0,
+        b: parseFloat(fillColor.b) || 0,
+      },
+      opacity: (fillColor.a == null || isNaN(parseFloat(fillColor.a))) ? 1 : parseFloat(fillColor.a),
+    };
+    rect.fills = [paintStyle];
+  }
+
+  // Set stroke color if provided
+  if (strokeColor) {
+    const strokeStyle = {
+      type: "SOLID",
+      color: {
+        r: parseFloat(strokeColor.r) || 0,
+        g: parseFloat(strokeColor.g) || 0,
+        b: parseFloat(strokeColor.b) || 0,
+      },
+      opacity: (strokeColor.a == null || isNaN(parseFloat(strokeColor.a))) ? 1 : parseFloat(strokeColor.a),
+    };
+    rect.strokes = [strokeStyle];
+  }
+
+  // Set stroke weight if provided
+  if (strokeWeight !== undefined) {
+    rect.strokeWeight = strokeWeight;
+  }
+
+  // Set corner radius if provided
+  if (cornerRadius !== undefined) {
+    rect.cornerRadius = cornerRadius;
+  }
 
   // If parentId is provided, append to that node, otherwise append to current page
   if (parentId) {
@@ -1023,6 +1114,8 @@ async function createFrame(params) {
     layoutSizingHorizontal = "FIXED",
     layoutSizingVertical = "FIXED",
     itemSpacing = 0,
+    cornerRadius,
+    opacity,
   } = params || {};
 
   const frame = figma.createFrame();
@@ -1046,12 +1139,18 @@ async function createFrame(params) {
     frame.primaryAxisAlignItems = primaryAxisAlignItems;
     frame.counterAxisAlignItems = counterAxisAlignItems;
 
-    // Set layout sizing only when layoutMode is not NONE
-    frame.layoutSizingHorizontal = layoutSizingHorizontal;
-    frame.layoutSizingVertical = layoutSizingVertical;
-
     // Set item spacing only when layoutMode is not NONE
     frame.itemSpacing = itemSpacing;
+  }
+
+  // Set corner radius if provided
+  if (cornerRadius !== undefined) {
+    frame.cornerRadius = cornerRadius;
+  }
+
+  // Set opacity if provided
+  if (opacity !== undefined) {
+    frame.opacity = opacity;
   }
 
   // Set fill color if provided
@@ -1063,7 +1162,7 @@ async function createFrame(params) {
         g: parseFloat(fillColor.g) || 0,
         b: parseFloat(fillColor.b) || 0,
       },
-      opacity: parseFloat(fillColor.a) || 1,
+      opacity: (fillColor.a == null || isNaN(parseFloat(fillColor.a))) ? 1 : parseFloat(fillColor.a),
     };
     frame.fills = [paintStyle];
   }
@@ -1077,7 +1176,7 @@ async function createFrame(params) {
         g: parseFloat(strokeColor.g) || 0,
         b: parseFloat(strokeColor.b) || 0,
       },
-      opacity: parseFloat(strokeColor.a) || 1,
+      opacity: (strokeColor.a == null || isNaN(parseFloat(strokeColor.a))) ? 1 : parseFloat(strokeColor.a),
     };
     frame.strokes = [strokeStyle];
   }
@@ -1088,8 +1187,9 @@ async function createFrame(params) {
   }
 
   // If parentId is provided, append to that node, otherwise append to current page
+  let parentNode = null;
   if (parentId) {
-    const parentNode = await figma.getNodeByIdAsync(parentId);
+    parentNode = await figma.getNodeByIdAsync(parentId);
     if (!parentNode) {
       throw new Error(`Parent node not found with ID: ${parentId}`);
     }
@@ -1099,6 +1199,30 @@ async function createFrame(params) {
     parentNode.appendChild(frame);
   } else {
     figma.currentPage.appendChild(frame);
+  }
+
+  // Set layout sizing AFTER appendChild. The two modes have DIFFERENT
+  // requirements in Figma and must be gated separately or the assignment throws:
+  //   - "FILL" requires the PARENT to be auto-layout (and the node to be a child).
+  //   - "HUG"  requires the FRAME ITSELF to be auto-layout (nothing to hug otherwise).
+  //   - "FIXED" is valid in either context.
+  // Gating the whole block on the parent (an earlier fix) both threw on HUG for a
+  // non-auto parent and dropped HUG on a top-level auto-layout frame.
+  const ownAuto = frame.layoutMode && frame.layoutMode !== "NONE";
+  const parentAuto = parentNode && parentNode.layoutMode && parentNode.layoutMode !== "NONE";
+  if (layoutSizingHorizontal === "FILL") {
+    if (parentAuto) frame.layoutSizingHorizontal = "FILL";
+  } else if (layoutSizingHorizontal === "HUG") {
+    if (ownAuto) frame.layoutSizingHorizontal = "HUG";
+  } else if (layoutSizingHorizontal === "FIXED") {
+    if (ownAuto || parentAuto) frame.layoutSizingHorizontal = "FIXED";
+  }
+  if (layoutSizingVertical === "FILL") {
+    if (parentAuto) frame.layoutSizingVertical = "FILL";
+  } else if (layoutSizingVertical === "HUG") {
+    if (ownAuto) frame.layoutSizingVertical = "HUG";
+  } else if (layoutSizingVertical === "FIXED") {
+    if (ownAuto || parentAuto) frame.layoutSizingVertical = "FIXED";
   }
 
   return {
@@ -1127,6 +1251,13 @@ async function createText(params) {
     fontColor = { r: 0, g: 0, b: 0, a: 1 }, // Default to black
     name = "",
     parentId,
+    fontFamily,
+    fontStyle,
+    width,
+    textAutoResize,
+    textAlignHorizontal,
+    letterSpacing,
+    lineHeight,
   } = params || {};
 
   // Map common font weights to Figma font styles
@@ -1159,17 +1290,47 @@ async function createText(params) {
   textNode.x = x;
   textNode.y = y;
   textNode.name = name || text;
+  // Honor an explicit fontFamily/fontStyle if given, otherwise fall back to
+  // Inter + the weight→style mapping. Load whichever font before applying.
+  const resolvedFamily = fontFamily || "Inter";
+  const resolvedStyle = fontStyle || getFontStyle(fontWeight);
   try {
     await figma.loadFontAsync({
-      family: "Inter",
-      style: getFontStyle(fontWeight),
+      family: resolvedFamily,
+      style: resolvedStyle,
     });
-    textNode.fontName = { family: "Inter", style: getFontStyle(fontWeight) };
+    textNode.fontName = { family: resolvedFamily, style: resolvedStyle };
     textNode.fontSize = parseInt(fontSize);
   } catch (error) {
     Log.error("Error setting font size", error);
   }
   setCharacters(textNode, text);
+
+  // Inline text-style params (reuse the same idioms as setTextStyle).
+  if (textAlignHorizontal) {
+    textNode.textAlignHorizontal = textAlignHorizontal;
+  }
+  if (letterSpacing !== undefined) {
+    textNode.letterSpacing = typeof letterSpacing === "number"
+      ? { value: letterSpacing, unit: "PIXELS" }
+      : letterSpacing;
+  }
+  if (lineHeight !== undefined) {
+    if (lineHeight === "AUTO") textNode.lineHeight = { unit: "AUTO" };
+    else if (typeof lineHeight === "number") {
+      textNode.lineHeight = { value: lineHeight, unit: "PIXELS" };
+    } else {
+      textNode.lineHeight = lineHeight;
+    }
+  }
+  // A fixed width implies wrapping: set HEIGHT auto-resize then resize the
+  // node to the requested width so text wraps within it.
+  if (typeof width === "number") {
+    textNode.textAutoResize = textAutoResize || "HEIGHT";
+    textNode.resize(width, textNode.height);
+  } else if (textAutoResize) {
+    textNode.textAutoResize = textAutoResize;
+  }
 
   // Set text color
   const paintStyle = {
@@ -1179,7 +1340,7 @@ async function createText(params) {
       g: parseFloat(fontColor.g) || 0,
       b: parseFloat(fontColor.b) || 0,
     },
-    opacity: parseFloat(fontColor.a) || 1,
+    opacity: (fontColor.a == null || isNaN(parseFloat(fontColor.a))) ? 1 : parseFloat(fontColor.a),
   };
   textNode.fills = [paintStyle];
 
@@ -2588,9 +2749,18 @@ async function getImageBytesByHash(params) {
   const image = figma.getImageByHash(imageHash);
   if (!image) throw new Error("No image found for hash: " + imageHash);
   const bytes = await image.getBytesAsync();
-  // base64-encode for transport over the WebSocket relay (text JSON only)
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  // base64-encode for transport over the WebSocket relay (text JSON only).
+  // Build the binary string in blocks via String.fromCharCode.apply on each
+  // block, then btoa once. Per-byte concatenation stalls (30s+) on multi-MB
+  // images; block-wise is dramatically faster. Blocks stay small (8192) so
+  // fromCharCode.apply never overflows the argument limit — do NOT use spread.
+  const BLOCK = 8192;
+  const blockStrings = [];
+  for (let i = 0; i < bytes.length; i += BLOCK) {
+    const end = Math.min(i + BLOCK, bytes.length);
+    blockStrings.push(String.fromCharCode.apply(null, bytes.subarray(i, end)));
+  }
+  const binary = blockStrings.join("");
   return {
     imageHash: imageHash,
     byteLength: bytes.length,
@@ -4167,6 +4337,10 @@ async function scanTextNodes(params) {
   let chunksProcessed = 0;
 
   for (let i = 0; i < totalNodes; i += chunkSize) {
+    // Best-effort cancellation (CONTRACT item D): stop between chunks and
+    // return whatever we have collected so far.
+    if (isCancelled(commandId)) break;
+
     const chunkEnd = Math.min(i + chunkSize, totalNodes);
     Log.info(
       `Processing chunk ${chunksProcessed + 1}/${totalChunks} (nodes ${i} to ${chunkEnd - 1
@@ -4517,6 +4691,10 @@ async function setMultipleTextContents(params) {
 
   // Process each chunk sequentially
   for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+    // Best-effort cancellation (CONTRACT item D): stop between chunks and
+    // return the partial results gathered so far.
+    if (isCancelled(commandId)) break;
+
     const chunk = chunks[chunkIndex];
     Log.info(
       `Processing chunk ${chunkIndex + 1}/${chunks.length} with ${chunk.length
@@ -4722,6 +4900,96 @@ function generateCommandId() {
     Math.random().toString(36).substring(2, 15) +
     Math.random().toString(36).substring(2, 15)
   );
+}
+
+// ---- Cancellation (CONTRACT item D, plugin half) ------------------
+// The server fires a best-effort "cancel_command" (with params.cancelId set
+// to a timed-out request's id) when it gives up waiting. Long/chunked
+// handlers check isCancelled(commandId) between chunks/items and stop early.
+var cancelledCommandIds = {};
+function isCancelled(id) { return !!id && cancelledCommandIds[id] === true; }
+function markCancelled(id) { if (id) cancelledCommandIds[id] = true; }
+function clearCancelled(id) { if (id) delete cancelledCommandIds[id]; }
+
+// ---- Batch commands (server registers the tool; handler lives here) ----
+// Deep-walk params replacing any "$ref:<name>" string with the id captured
+// earlier in the batch (entry.ref -> created node id). ES-safe: no spread,
+// no ??, no Object.fromEntries — plain for-loops and Object.assign only.
+function resolveRefs(value, refs) {
+  if (typeof value === "string") {
+    if (value.indexOf("$ref:") === 0) {
+      var k = value.slice(5);
+      return refs[k] != null ? refs[k] : value;
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    var arr = [];
+    for (var i = 0; i < value.length; i++) {
+      arr.push(resolveRefs(value[i], refs));
+    }
+    return arr;
+  }
+  if (value && typeof value === "object") {
+    var out = {};
+    for (var kk in value) {
+      if (Object.prototype.hasOwnProperty.call(value, kk)) {
+        out[kk] = resolveRefs(value[kk], refs);
+      }
+    }
+    return out;
+  }
+  return value;
+}
+
+// Run a list of commands sequentially inside a single queue entry. Each op may
+// name a "ref"; its created node id is stored so later ops can reference it via
+// "$ref:<name>" in any param value. handleCommand is called directly (NOT via
+// the serialization queue) so the batch never deadlocks on itself.
+async function executeBatch(params) {
+  var cmds = (params && params.commands) || [];
+  var stopOnError = !!(params && params.stopOnError);
+  var commandId = (params && params.commandId) || generateCommandId();
+  var refs = {};       // ref-name -> created node id
+  var results = [];    // per-op {index, success, result|error, ref?}
+  for (var i = 0; i < cmds.length; i++) {
+    // Best-effort cancellation (CONTRACT item D): stop between ops.
+    if (isCancelled(commandId)) break;
+    var entry = cmds[i] || {};
+    if (entry.command === "batch_commands") {
+      results.push({ index: i, success: false, error: "nested batch_commands not allowed" });
+      continue;
+    }
+    try {
+      var resolvedParams = resolveRefs(entry.params || {}, refs);
+      // Stamp the batch's commandId so a long/chunked sub-op (scan_text_nodes,
+      // set_multiple_text_contents, …) emits progress tagged with the batch's
+      // server request id, re-arming the batch's inactivity timer. Without this
+      // the sub-op falls back to a random generateCommandId() the server can't
+      // match, and a single slow inner op could time the whole batch out.
+      resolvedParams = Object.assign({}, resolvedParams, { commandId: commandId });
+      var result = await handleCommand(entry.command, resolvedParams);
+      if (entry.ref && result && result.id) refs[entry.ref] = result.id;
+      results.push({ index: i, success: true, ref: entry.ref, result: result });
+    } catch (e) {
+      results.push({ index: i, success: false, error: (e && e.message) || String(e) });
+      if (stopOnError) break;
+    }
+    if (i % 5 === 4 || i === cmds.length - 1) {
+      await sendProgressUpdate(
+        commandId,
+        "batch_commands",
+        "in_progress",
+        Math.round(((i + 1) / cmds.length) * 100),
+        cmds.length,
+        i + 1,
+        "Executed " + (i + 1) + "/" + cmds.length,
+        null
+      );
+    }
+  }
+  clearCancelled(commandId);
+  return { opsTotal: cmds.length, refs: refs, results: results };
 }
 
 async function getAnnotations(params) {
@@ -4945,7 +5213,7 @@ async function scanNodesByTypes(params) {
   const matchingNodes = [];
 
   // Send a single progress update to notify start
-  const commandId = generateCommandId();
+  const commandId = (params && params.commandId) || generateCommandId();
   sendProgressUpdate(
     commandId,
     "scan_nodes_by_types",
@@ -4962,7 +5230,7 @@ async function scanNodesByTypes(params) {
   // Recursively find nodes with specified types.
   // visited Set guards against pathological trees that could cause re-entry
   // (e.g. instance↔main swap, future API changes that expose cycles).
-  await findNodesByTypes(node, types, matchingNodes, new Set());
+  await findNodesByTypes(node, types, matchingNodes, new Set(), commandId);
 
   // Send completion update
   sendProgressUpdate(
@@ -4992,7 +5260,10 @@ async function scanNodesByTypes(params) {
  * @param {Array} matchingNodes - Array to store found nodes
  * @param {Set<string>} visited - Visited node IDs (cycle guard)
  */
-async function findNodesByTypes(node, types, matchingNodes = [], visited = new Set()) {
+async function findNodesByTypes(node, types, matchingNodes = [], visited = new Set(), commandId) {
+  // Best-effort cancellation (CONTRACT item D): stop descending once cancelled.
+  if (isCancelled(commandId)) return;
+
   // Skip invisible nodes
   if (node.visible === false) return;
 
@@ -5021,7 +5292,8 @@ async function findNodesByTypes(node, types, matchingNodes = [], visited = new S
   // Recursively process children of container nodes
   if ("children" in node) {
     for (const child of node.children) {
-      await findNodesByTypes(child, types, matchingNodes, visited);
+      if (isCancelled(commandId)) break;
+      await findNodesByTypes(child, types, matchingNodes, visited, commandId);
     }
   }
 }
@@ -5618,7 +5890,7 @@ async function setMultipleAnnotations(params) {
 
 async function deleteMultipleNodes(params) {
   const { nodeIds } = params || {};
-  const commandId = generateCommandId();
+  const commandId = (params && params.commandId) || generateCommandId();
 
   if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0) {
     const errorMsg = "Missing or invalid nodeIds parameter";
@@ -5681,6 +5953,10 @@ async function deleteMultipleNodes(params) {
 
   // Process each chunk sequentially
   for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+    // Best-effort cancellation (CONTRACT item D): stop between chunks and
+    // return the partial results gathered so far.
+    if (isCancelled(commandId)) break;
+
     const chunk = chunks[chunkIndex];
     Log.info(
       `Processing chunk ${chunkIndex + 1}/${chunks.length} with ${chunk.length
@@ -6635,9 +6911,9 @@ async function createConnections(params) {
   }
   
   const { connections } = params;
-  
+
   // Command ID for progress tracking
-  const commandId = generateCommandId();
+  const commandId = (params && params.commandId) || generateCommandId();
   sendProgressUpdate(
     commandId,
     "create_connections",
@@ -6756,8 +7032,10 @@ async function createConnections(params) {
           // Continue with connection even if text setting fails
           results.push({
             id: clonedConnector.id,
-            startNodeId: startNodeId,
-            endNodeId: endNodeId,
+            originalStartNodeId: originalStartId,
+            originalEndNodeId: originalEndId,
+            usedStartNodeId: startId,
+            usedEndNodeId: endId,
             text: "",
             textError: textError.message
           });
@@ -7493,6 +7771,38 @@ async function createEllipse(params) {
   const node = figma.createEllipse();
   if (p.name) node.name = p.name;
   ensureSize(node, p.width, p.height);
+
+  // Set fill color if provided
+  if (p.fillColor) {
+    node.fills = [{
+      type: "SOLID",
+      color: {
+        r: parseFloat(p.fillColor.r) || 0,
+        g: parseFloat(p.fillColor.g) || 0,
+        b: parseFloat(p.fillColor.b) || 0,
+      },
+      opacity: (p.fillColor.a == null || isNaN(parseFloat(p.fillColor.a))) ? 1 : parseFloat(p.fillColor.a),
+    }];
+  }
+
+  // Set stroke color if provided
+  if (p.strokeColor) {
+    node.strokes = [{
+      type: "SOLID",
+      color: {
+        r: parseFloat(p.strokeColor.r) || 0,
+        g: parseFloat(p.strokeColor.g) || 0,
+        b: parseFloat(p.strokeColor.b) || 0,
+      },
+      opacity: (p.strokeColor.a == null || isNaN(parseFloat(p.strokeColor.a))) ? 1 : parseFloat(p.strokeColor.a),
+    }];
+  }
+
+  // Set stroke weight if provided
+  if (p.strokeWeight !== undefined) {
+    node.strokeWeight = p.strokeWeight;
+  }
+
   await placeAtSimple(node, p.x, p.y, p.parentId);
   return { id: node.id, name: node.name, type: node.type, x: node.x, y: node.y };
 }
