@@ -395,7 +395,55 @@
         serverPort: 3055,
         pendingRequests: new Map(),
         channel: null,
+        userClosed: false,
+        reconnectAttempts: 0,
+        reconnectTimer: null,
       };
+
+      // Reconnect policy (mirrors server-side backoff)
+      const RECONNECT_MAX_ATTEMPTS = 10;
+      const RECONNECT_BASE_DELAY_MS = 2000;
+      const RECONNECT_MAX_DELAY_MS = 30000;
+
+      function clearReconnectTimer() {
+        if (state.reconnectTimer) {
+          clearTimeout(state.reconnectTimer);
+          state.reconnectTimer = null;
+        }
+      }
+
+      function scheduleReconnect() {
+        // Never reconnect after a user-initiated disconnect.
+        if (state.userClosed) return;
+        if (state.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+          updateConnectionStatus(
+            false,
+            `Reconnect failed after ${RECONNECT_MAX_ATTEMPTS} attempts. Click Connect to retry.`
+          );
+          connectionStatus.className = "status disconnected";
+          return;
+        }
+
+        state.reconnectAttempts += 1;
+        const attempt = state.reconnectAttempts;
+        const delay = Math.min(
+          RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt - 1),
+          RECONNECT_MAX_DELAY_MS
+        );
+
+        updateConnectionStatus(
+          false,
+          `Reconnecting… attempt ${attempt} of ${RECONNECT_MAX_ATTEMPTS}`
+        );
+        connectionStatus.className = "status info";
+
+        clearReconnectTimer();
+        state.reconnectTimer = setTimeout(() => {
+          state.reconnectTimer = null;
+          if (state.userClosed) return;
+          connectToServer(state.serverPort);
+        }, delay);
+      }
 
       // UI Elements
       const portInput = document.getElementById("port");
@@ -476,14 +524,22 @@
             return;
           }
 
+          // A connect attempt (manual or auto-reconnect) means we intend to
+          // stay connected; clear the user-closed flag so reconnect works.
+          state.userClosed = false;
           state.serverPort = port;
+          // A fresh connect attempt is in progress; any pending reconnect
+          // timer is now redundant.
+          clearReconnectTimer();
           const wsUrl = `ws://localhost:${port}`;
 
           state.socket = new WebSocket(wsUrl);
 
           state.socket.onopen = () => {
-            // Generate random channel name
-            const channelName = generateChannelName();
+            // Reuse the existing channel across reconnects so the MCP
+            // server's currentChannel still matches. Only mint a new random
+            // channel name on the very first connect (none stored yet).
+            const channelName = state.channel || generateChannelName();
             console.log("Joining channel:", channelName);
             state.channel = channelName;
 
@@ -509,6 +565,10 @@
                 // Successfully joined channel
                 if (data.message && data.message.result) {
                   state.connected = true;
+                  // Successful join: reset backoff and cancel any pending
+                  // reconnect attempt.
+                  state.reconnectAttempts = 0;
+                  clearReconnectTimer();
                   const channelName = data.channel;
                   updateConnectionStatus(
                     true,
@@ -528,8 +588,19 @@
                 }
               } else if (data.type === "error") {
                 console.error("Error:", data.message);
-                updateConnectionStatus(false, `Error: ${data.message}`);
-                state.socket.close();
+                if (data.id) {
+                  // Per-request relay error (e.g. zero-peer / not-joined).
+                  // The request rejection is handled on the server via the
+                  // correlated error frame — do NOT tear down the socket over
+                  // a single transient request failure.
+                  console.warn(
+                    `Relay error for request ${data.id}: ${data.message}`
+                  );
+                } else {
+                  // Connection-level error (e.g. bad token at join). Fatal.
+                  updateConnectionStatus(false, `Error: ${data.message}`);
+                  state.socket.close();
+                }
               }
 
               handleSocketMessage(data);
@@ -541,14 +612,36 @@
           state.socket.onclose = () => {
             state.connected = false;
             state.socket = null;
-            updateConnectionStatus(false, "Disconnected from server");
+
+            // Reject any in-flight requests so the plugin side doesn't leak
+            // pending promises across a disconnect.
+            if (state.pendingRequests && state.pendingRequests.size) {
+              state.pendingRequests.forEach(({ reject }) => {
+                try {
+                  reject(new Error("Disconnected from server"));
+                } catch (e) {
+                  // ignore
+                }
+              });
+              state.pendingRequests.clear();
+            }
+
+            if (state.userClosed) {
+              updateConnectionStatus(false, "Disconnected from server");
+            } else {
+              // Unexpected drop — attempt to reconnect on the same channel.
+              scheduleReconnect();
+            }
           };
 
           state.socket.onerror = (error) => {
             console.error("WebSocket error:", error);
-            updateConnectionStatus(false, "Connection error");
             state.connected = false;
-            state.socket = null;
+            // Let onclose drive reconnect/status; only surface status here if
+            // the socket won't fire a subsequent close.
+            if (state.userClosed) {
+              updateConnectionStatus(false, "Connection error");
+            }
           };
         } catch (error) {
           console.error("Connection error:", error);
@@ -561,6 +654,11 @@
 
       // Disconnect from websocket server
       function disconnectFromServer() {
+        // Mark as user-initiated so onclose does NOT schedule a reconnect,
+        // and cancel any reconnect already pending.
+        state.userClosed = true;
+        state.reconnectAttempts = 0;
+        clearReconnectTimer();
         if (state.socket) {
           state.socket.close();
           state.socket = null;
@@ -778,7 +876,7 @@
 
         console.log("Sending progress update to server:", progressData);
 
-        const requestId = state.activeRequestId || progressData.commandId;
+        const requestId = progressData.commandId || state.activeRequestId;
         state.socket.send(
           JSON.stringify({
             id: requestId,

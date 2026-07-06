@@ -73,14 +73,73 @@ const pendingRequests = new Map<string, {
 
 // Track which channel each client is in
 let currentChannel: string | null = null;
+// Whether the current socket has an acknowledged channel join. Cleared on
+// open/close, set true only after the (re)join is acked. Non-join commands
+// wait for this before they are allowed to send.
+let joined = false;
 
 // Reconnection state
 let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 10;
+// Raised well above the old value of 10 so a long relay outage doesn't
+// permanently wedge the server. joinChannel()/sendCommandToFigma also reset
+// this counter and kick a fresh reconnect if called after we gave up.
+const MAX_RECONNECT_ATTEMPTS = 30;
 const RECONNECT_BASE_DELAY_MS = 2000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let shuttingDown = false;
+
+// Requests that hit a server-side timeout. A late response for one of these
+// ids means Figma finished the work after we gave up — we log a clear warning
+// instead of silently dropping it. Ids expire after ~5 min.
+const tombstonedRequests = new Set<string>();
+function tombstoneRequest(id: string): void {
+  tombstonedRequests.add(id);
+  setTimeout(() => { tombstonedRequests.delete(id); }, 5 * 60 * 1000);
+}
+
+// Outbound requests that were serialized while the socket was not ready to
+// send (reconnecting, or connected but not yet joined). Flushed in order once
+// the channel (re)join is acked. The per-command timeout is already armed for
+// each, so a queued request still fails if reconnection never completes.
+const OUTBOUND_QUEUE_MAX = 200;
+const outboundQueue: Array<{ id: string; payload: string }> = [];
+
+// Fire-and-forget a best-effort cancel to the plugin for a timed-out request.
+// Does NOT create a pendingRequests entry (we already gave up on the original).
+function sendCancelToFigma(cancelId: string): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !currentChannel) return;
+  const frameId = uuidv4();
+  try {
+    ws.send(JSON.stringify({
+      id: frameId,
+      type: "message",
+      channel: currentChannel,
+      message: {
+        id: frameId,
+        command: "cancel_command",
+        params: { cancelId },
+      },
+    }));
+  } catch (err) {
+    logger.warn(`Failed to send cancel for ${cancelId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// Flush any queued outbound requests once the socket is ready and joined.
+function flushOutboundQueue(): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  while (outboundQueue.length > 0) {
+    const item = outboundQueue.shift()!;
+    // Only flush requests still awaiting a response (not timed out/cancelled).
+    if (!pendingRequests.has(item.id)) continue;
+    try {
+      ws.send(item.payload);
+    } catch (err) {
+      logger.error(`Failed to flush queued request ${item.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
 
 function shutdown() {
   shuttingDown = true;
@@ -129,6 +188,8 @@ const LONG_RUNNING_COMMANDS: ReadonlySet<string> = new Set([
   "set_multiple_text_contents",
   "set_multiple_annotations",
   "get_nodes_info",
+  // Full export + recursive filter; can exceed the default budget on large subtrees.
+  "get_node_info",
   "read_my_design",
   "export_node_as_image",
   "get_instance_overrides",
@@ -137,6 +198,8 @@ const LONG_RUNNING_COMMANDS: ReadonlySet<string> = new Set([
   "get_team_libraries",
   "import_library_component",
   "import_library_variable",
+  // Runs an ordered batch of commands in one plugin pass; give it the long budget.
+  "batch_commands",
 ]);
 
 function defaultTimeoutFor(command: string): number {
@@ -342,8 +405,28 @@ server.tool(
       .string()
       .optional()
       .describe("Optional parent node ID to append the rectangle to"),
+    fillColor: z
+      .object({
+        r: z.number().min(0).max(1).describe("Red component (0-1)"),
+        g: z.number().min(0).max(1).describe("Green component (0-1)"),
+        b: z.number().min(0).max(1).describe("Blue component (0-1)"),
+        a: z.number().min(0).max(1).optional().describe("Alpha component (0-1)"),
+      })
+      .optional()
+      .describe("Optional fill color in RGBA format"),
+    strokeColor: z
+      .object({
+        r: z.number().min(0).max(1).describe("Red component (0-1)"),
+        g: z.number().min(0).max(1).describe("Green component (0-1)"),
+        b: z.number().min(0).max(1).describe("Blue component (0-1)"),
+        a: z.number().min(0).max(1).optional().describe("Alpha component (0-1)"),
+      })
+      .optional()
+      .describe("Optional stroke color in RGBA format"),
+    strokeWeight: z.number().optional().describe("Optional stroke weight"),
+    cornerRadius: z.number().min(0).optional().describe("Optional corner radius"),
   },
-  async ({ x, y, width, height, name, parentId }: any) => {
+  async ({ x, y, width, height, name, parentId, fillColor, strokeColor, strokeWeight, cornerRadius }: any) => {
     try {
       const result = await sendCommandToFigma("create_rectangle", {
         x,
@@ -352,6 +435,10 @@ server.tool(
         height,
         name: name || "Rectangle",
         parentId,
+        fillColor,
+        strokeColor,
+        strokeWeight,
+        cornerRadius,
       });
       return {
         content: [
@@ -418,6 +505,8 @@ server.tool(
       .optional()
       .describe("Stroke color in RGBA format"),
     strokeWeight: z.number().positive().optional().describe("Stroke weight"),
+    cornerRadius: z.number().min(0).optional().describe("Optional corner radius"),
+    opacity: z.number().min(0).max(1).optional().describe("Optional opacity (0-1)"),
     layoutMode: z.enum(["NONE", "HORIZONTAL", "VERTICAL"]).optional().describe("Auto-layout mode for the frame"),
     layoutWrap: z.enum(["NO_WRAP", "WRAP"]).optional().describe("Whether the auto-layout frame wraps its children"),
     paddingTop: z.number().optional().describe("Top padding for auto-layout frame"),
@@ -446,6 +535,8 @@ server.tool(
     fillColor,
     strokeColor,
     strokeWeight,
+    cornerRadius,
+    opacity,
     layoutMode,
     layoutWrap,
     paddingTop,
@@ -469,6 +560,8 @@ server.tool(
         fillColor: fillColor || { r: 1, g: 1, b: 1, a: 1 },
         strokeColor: strokeColor,
         strokeWeight: strokeWeight,
+        cornerRadius,
+        opacity,
         layoutMode,
         layoutWrap,
         paddingTop,
@@ -539,8 +632,21 @@ server.tool(
       .string()
       .optional()
       .describe("Optional parent node ID to append the text to"),
+    fontFamily: z.string().optional().describe("Optional font family (e.g. Inter)"),
+    fontStyle: z.string().optional().describe("Optional font style (e.g. Regular, Bold)"),
+    width: z.number().optional().describe("Optional fixed width (implies bounded auto-resize)"),
+    textAutoResize: z
+      .enum(["NONE", "WIDTH_AND_HEIGHT", "HEIGHT", "TRUNCATE"])
+      .optional()
+      .describe("Optional auto-resize behavior"),
+    textAlignHorizontal: z
+      .enum(["LEFT", "CENTER", "RIGHT", "JUSTIFIED"])
+      .optional()
+      .describe("Optional horizontal text alignment"),
+    letterSpacing: z.number().optional().describe("Optional letter spacing"),
+    lineHeight: z.number().optional().describe("Optional line height"),
   },
-  async ({ x, y, text, fontSize, fontWeight, fontColor, name, parentId }: any) => {
+  async ({ x, y, text, fontSize, fontWeight, fontColor, name, parentId, fontFamily, fontStyle, width, textAutoResize, textAlignHorizontal, letterSpacing, lineHeight }: any) => {
     try {
       const result = await sendCommandToFigma("create_text", {
         x,
@@ -551,6 +657,13 @@ server.tool(
         fontColor: fontColor || { r: 0, g: 0, b: 0, a: 1 },
         name: name || "Text",
         parentId,
+        fontFamily,
+        fontStyle,
+        width,
+        textAutoResize,
+        textAlignHorizontal,
+        letterSpacing,
+        lineHeight,
       });
       const typedResult = result as { name: string; id: string };
       return {
@@ -1588,8 +1701,24 @@ const sized = {
 
 wrapToolHandler(
   "create_ellipse",
-  "Create an ELLIPSE node. width/height optional (Figma default 100×100).",
-  { ...placement, ...sized },
+  "Create an ELLIPSE node. width/height optional (Figma default 100×100). Optional fillColor/strokeColor (RGBA 0-1) and strokeWeight.",
+  {
+    ...placement,
+    ...sized,
+    fillColor: z.object({
+      r: z.number().min(0).max(1),
+      g: z.number().min(0).max(1),
+      b: z.number().min(0).max(1),
+      a: z.number().min(0).max(1).optional(),
+    }).optional(),
+    strokeColor: z.object({
+      r: z.number().min(0).max(1),
+      g: z.number().min(0).max(1),
+      b: z.number().min(0).max(1),
+      a: z.number().min(0).max(1).optional(),
+    }).optional(),
+    strokeWeight: z.number().optional(),
+  },
   (r: any) => `Created ellipse "${r.id}" at (${r.x}, ${r.y})`,
 );
 
@@ -2352,6 +2481,20 @@ registerPassthroughTool(
   },
   "Error importing library variable",
 );
+
+// Batch Commands Tool
+registerPassthroughTool(
+  "batch_commands",
+  "Execute an ordered list of Figma commands in ONE round trip — the fast path for building multi-element designs. Each entry is {command, params, ref?}. A later entry can reference a node created by an earlier entry by putting the string '$ref:<name>' in ANY param value (e.g. parentId:'$ref:card'); the plugin substitutes the created node's id. Set stopOnError to abort on the first failure (default false: failures are reported per-op and the batch continues). Prefer this over dozens of individual create_/set_ calls.",
+  {
+    commands: z.array(z.object({
+      command: z.string().describe("Any existing plugin command, e.g. create_frame, create_text, set_corner_radius"),
+      params: z.record(z.any()).optional().describe("Params for that command; '$ref:<name>' strings resolve to earlier ops' node ids"),
+      ref: z.string().optional().describe("Name to store THIS op's resulting node id under, for later '$ref:' references"),
+    })).min(1).max(200).describe("Ordered commands to execute in one plugin pass"),
+    stopOnError: z.boolean().optional().describe("Abort remaining ops on first failure (default false)"),
+  },
+  "Error executing batch_commands");
 
 // Set Mask Tool (BL-074)
 registerPassthroughTool(
@@ -4196,7 +4339,8 @@ type FigmaCommand =
   | "set_layout_positioning"
   | "create_slice"
   | "figma_notify"
-  | "measure_distance";
+  | "measure_distance"
+  | "batch_commands";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4640,6 +4784,10 @@ type CommandParams = {
     nodeIdA: string;
     nodeIdB: string;
   };
+  batch_commands: {
+    commands: Array<{ command: string; params?: Record<string, unknown>; ref?: string }>;
+    stopOnError?: boolean;
+  };
 
 };
 
@@ -4651,32 +4799,60 @@ function connectToFigma(port: number = 3055) {
     logger.info('Already connected to Figma');
     return;
   }
+  // A socket is already being established, or a reconnect is scheduled —
+  // don't open a second parallel socket that would race the first.
+  if (ws && ws.readyState === WebSocket.CONNECTING) {
+    logger.info('Connection to Figma already in progress');
+    return;
+  }
+  if (reconnectTimer) {
+    logger.info('Reconnect to Figma already scheduled');
+    return;
+  }
 
   const wsUrl = serverUrl === 'localhost' ? `${WS_URL}:${port}` : WS_URL;
   logger.info(`Connecting to Figma socket server at ${wsUrl}...`);
-  ws = new WebSocket(wsUrl);
+  // Capture the socket locally so stale handlers (from a previous socket that
+  // closed after a newer one opened) can't clobber module state or reject the
+  // wrong requests. Every handler bails out with `if (ws !== socket) return;`.
+  const socket = new WebSocket(wsUrl);
+  ws = socket;
+  joined = false;
 
-  ws.on('open', () => {
+  socket.on('open', () => {
+    if (ws !== socket) return;
     logger.info('Connected to Figma socket server');
     reconnectAttempts = 0;
+    joined = false;
 
     // Auto-rejoin the previously active channel after a reconnect.
     // Without this, subsequent commands fail with "Must join a channel...".
+    // currentChannel is kept set optimistically so commands issued during the
+    // rejoin window queue rather than failing with "Must join a channel".
     const channelToRejoin = currentChannel;
     if (channelToRejoin) {
-      currentChannel = null; // sendCommandToFigma allows "join" without a channel
       sendCommandToFigma("join", { channel: channelToRejoin })
         .then(() => {
+          if (ws !== socket) return;
           currentChannel = channelToRejoin;
+          joined = true;
           logger.info(`Rejoined channel: ${channelToRejoin}`);
+          // Now that we're joined, flush anything that queued while offline.
+          flushOutboundQueue();
         })
         .catch((err) => {
           logger.error(`Failed to rejoin channel ${channelToRejoin}: ${err instanceof Error ? err.message : String(err)}`);
+          // A failed rejoin leaves us connected-but-useless; force a reconnect
+          // so the backoff path runs instead of silently swallowing the error.
+          if (ws === socket) {
+            try { socket.close(); } catch { /* ignore */ }
+          }
         });
     }
   });
 
-  ws.on("message", (data: any) => {
+  socket.on("message", (data: any) => {
+    if (ws !== socket) return;
     try {
       // Define a more specific type with an index signature to allow any property access
       interface ProgressMessage {
@@ -4687,6 +4863,17 @@ function connectToFigma(port: number = 3055) {
       }
 
       const json = JSON.parse(data) as ProgressMessage;
+
+      // Handle relay-side error frames. These arrive at TOP LEVEL (not under
+      // json.message) and carry the offending frame's id, so we can fail the
+      // matching request fast instead of hanging to timeout (contract item A).
+      if (json.type === 'error' && json.id && pendingRequests.has(json.id)) {
+        const req = pendingRequests.get(json.id)!;
+        clearTimeout(req.timeout);
+        pendingRequests.delete(json.id);
+        req.reject(new Error(json.message || "Relay error"));
+        return;
+      }
 
       // Handle progress updates
       if (json.type === 'progress_update') {
@@ -4709,6 +4896,10 @@ function connectToFigma(port: number = 3055) {
             if (pendingRequests.has(requestId)) {
               logger.error(`Request ${requestId} timed out after ${TIMEOUTS.inactivity / 1000}s of inactivity`);
               pendingRequests.delete(requestId);
+              // Tombstone + best-effort cancel so a late response is recognized
+              // and runaway plugin work is asked to stop (BL contract item D).
+              tombstoneRequest(requestId);
+              sendCancelToFigma(requestId);
               request.reject(new Error('Request to Figma timed out (no progress)'));
             }
           }, TIMEOUTS.inactivity);
@@ -4734,11 +4925,16 @@ function connectToFigma(port: number = 3055) {
       logger.debug(`Received message: ${JSON.stringify(myResponse)}`);
       logger.log('myResponse' + JSON.stringify(myResponse));
 
-      // Handle response to a request
+      // Handle response to a request. Settle whenever the frame is a response
+      // for a known id AND carries either "result" or "error" — even if result
+      // is null/false/0/"" (e.g. get_node_info on a VECTOR node returns null),
+      // which previously fell through to the broadcast branch and hung to
+      // timeout. Check error BEFORE result.
       if (
         myResponse.id &&
         pendingRequests.has(myResponse.id) &&
-        myResponse.result
+        (Object.prototype.hasOwnProperty.call(myResponse, "result") ||
+          Object.prototype.hasOwnProperty.call(myResponse, "error"))
       ) {
         const request = pendingRequests.get(myResponse.id)!;
         clearTimeout(request.timeout);
@@ -4747,28 +4943,37 @@ function connectToFigma(port: number = 3055) {
           logger.error(`Error from Figma: ${myResponse.error}`);
           request.reject(new Error(myResponse.error));
         } else {
-          if (myResponse.result) {
-            request.resolve(myResponse.result);
-          }
+          request.resolve(myResponse.result); // may be null — fine
         }
 
         pendingRequests.delete(myResponse.id);
       } else {
-        // Handle broadcast messages or events
-        logger.info(`Received broadcast message: ${JSON.stringify(myResponse)}`);
+        // A response for an id we already timed out on: Figma finished the work
+        // after we gave up. Warn clearly — a retry may duplicate the effect.
+        if (myResponse.id && tombstonedRequests.has(myResponse.id)) {
+          logger.warn(`late response for timed-out request ${myResponse.id} (Figma likely completed it after timeout; retry may duplicate)`);
+        } else {
+          // Handle broadcast messages or events
+          logger.info(`Received broadcast message: ${JSON.stringify(myResponse)}`);
+        }
       }
     } catch (error) {
       logger.error(`Error parsing message: ${error instanceof Error ? error.message : String(error)}`);
     }
   });
 
-  ws.on('error', (error) => {
+  socket.on('error', (error) => {
+    if (ws !== socket) return;
     logger.error(`Socket error: ${error}`);
   });
 
-  ws.on('close', () => {
+  socket.on('close', () => {
+    // A stale socket closing must not clobber the current one or reject the
+    // wrong requests.
+    if (ws !== socket) return;
     logger.info('Disconnected from Figma socket server');
     ws = null;
+    joined = false;
 
     // Reject all pending requests
     for (const [id, request] of pendingRequests.entries()) {
@@ -4776,6 +4981,8 @@ function connectToFigma(port: number = 3055) {
       request.reject(new Error("Connection closed"));
       pendingRequests.delete(id);
     }
+    // Anything still queued can never flush on this dead socket.
+    outboundQueue.length = 0;
 
     if (shuttingDown) return;
 
@@ -4798,8 +5005,30 @@ function connectToFigma(port: number = 3055) {
   });
 }
 
+// If we previously gave up reconnecting (hit MAX_RECONNECT_ATTEMPTS), a fresh
+// call from the tool layer should un-wedge the server: reset the counter and
+// kick a new connection attempt. Cheap and idempotent — connectToFigma() is a
+// no-op when already open/connecting/scheduled.
+function ensureConnected(): void {
+  // Only reset the give-up counter and kick a fresh connection when we've truly
+  // stopped trying: no reconnect already scheduled AND no live/pending socket.
+  // Without the reconnectTimer guard, steady offline traffic would reset
+  // reconnectAttempts=0 on every queued command mid-backoff — pinning the delay
+  // at ~2s and making the MAX_RECONNECT_ATTEMPTS give-up unreachable. After a
+  // real give-up the timer is null, so this still un-wedges the server.
+  if (reconnectTimer) return;
+  if (!ws || (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING)) {
+    reconnectAttempts = 0;
+    connectToFigma();
+  }
+}
+
 // Function to join a channel
 async function joinChannel(channelName: string): Promise<void> {
+  // Don't hard-fail when the socket is down — kick a reconnect (resetting the
+  // give-up counter) so a long relay outage doesn't permanently wedge us. The
+  // join itself sends immediately once OPEN and is not queued.
+  ensureConnected();
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     throw new Error("Not connected to Figma");
   }
@@ -4807,7 +5036,10 @@ async function joinChannel(channelName: string): Promise<void> {
   try {
     await sendCommandToFigma("join", { channel: channelName });
     currentChannel = channelName;
+    joined = true;
     logger.info(`Joined channel: ${channelName}`);
+    // A manual join may have raced queued commands; flush them now.
+    flushOutboundQueue();
   } catch (error) {
     logger.error(`Failed to join channel: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
@@ -4822,17 +5054,12 @@ function sendCommandToFigma(
 ): Promise<unknown> {
   // Per-command default; explicit timeoutMs argument overrides the policy.
   const effectiveTimeout = timeoutMs ?? defaultTimeoutFor(command);
+  const isJoin = command === "join";
   return new Promise((resolve, reject) => {
-    // If not connected, try to connect first
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      connectToFigma();
-      reject(new Error("Not connected to Figma. Attempting to connect..."));
-      return;
-    }
-
-    // Check if we need a channel for this command
-    const requiresChannel = command !== "join";
-    if (requiresChannel && !currentChannel) {
+    // A non-join command still needs a channel target. currentChannel is kept
+    // set optimistically during reconnect/rejoin, so this only rejects when we
+    // genuinely never joined a channel.
+    if (!isJoin && !currentChannel) {
       reject(new Error("Must join a channel before sending commands"));
       return;
     }
@@ -4843,8 +5070,8 @@ function sendCommandToFigma(
     const relayToken = process.env.FIGMA_RELAY_TOKEN || "";
     const request = {
       id,
-      type: command === "join" ? "join" : "message",
-      ...(command === "join"
+      type: isJoin ? "join" : "message",
+      ...(isJoin
         ? {
             channel: (params as any).channel,
             ...(relayToken ? { token: relayToken } : {}),
@@ -4859,17 +5086,24 @@ function sendCommandToFigma(
         },
       },
     };
+    const payload = JSON.stringify(request);
 
-    // Set timeout for request
+    // Set timeout for request. Armed unconditionally (even for queued
+    // requests), so a request still fails if reconnection never completes —
+    // nothing hangs forever.
     const timeout = setTimeout(() => {
       if (pendingRequests.has(id)) {
         pendingRequests.delete(id);
         logger.error(`Request ${id} (${command}) to Figma timed out after ${effectiveTimeout / 1000}s`);
+        // Tombstone + best-effort cancel (contract item D).
+        tombstoneRequest(id);
+        sendCancelToFigma(id);
         reject(new Error(`Request to Figma timed out (${command}, ${effectiveTimeout / 1000}s)`));
       }
     }, effectiveTimeout);
 
-    // Store the promise callbacks to resolve/reject later
+    // Store the promise callbacks to resolve/reject later (registered exactly
+    // once, whether we send now or queue).
     pendingRequests.set(id, {
       resolve,
       reject,
@@ -4877,10 +5111,35 @@ function sendCommandToFigma(
       lastActivity: Date.now()
     });
 
-    // Send the request
-    logger.info(`Sending command to Figma: ${command}`);
-    logger.debug(`Request details: ${JSON.stringify(request)}`);
-    ws.send(JSON.stringify(request));
+    // Ready to send iff the socket is OPEN and — for non-join commands — the
+    // channel join has been acked. A "join" always sends immediately once OPEN
+    // and is never queued.
+    const socketOpen = !!ws && ws.readyState === WebSocket.OPEN;
+    const readyToSend = socketOpen && (isJoin || joined);
+
+    if (readyToSend) {
+      logger.info(`Sending command to Figma: ${command}`);
+      logger.debug(`Request details: ${payload}`);
+      ws!.send(payload);
+      return;
+    }
+
+    // Not ready: queue non-join commands and make sure a connection is coming.
+    // (A join that reaches here has no OPEN socket, so it queues too and the
+    //  reconnect/rejoin path re-issues its own join.)
+    if (outboundQueue.length >= OUTBOUND_QUEUE_MAX) {
+      // Drop the oldest queued request with a clear error to bound memory.
+      const oldest = outboundQueue.shift();
+      if (oldest && pendingRequests.has(oldest.id)) {
+        const stale = pendingRequests.get(oldest.id)!;
+        clearTimeout(stale.timeout);
+        pendingRequests.delete(oldest.id);
+        stale.reject(new Error("Outbound queue full — request dropped while reconnecting to Figma"));
+      }
+    }
+    outboundQueue.push({ id, payload });
+    logger.info(`Queued command ${command} (${id}) while socket not ready; queue size ${outboundQueue.length}`);
+    ensureConnected();
   });
 }
 
